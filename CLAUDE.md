@@ -15,11 +15,16 @@ knowledge — these APIs evolve and the docs are the source of truth.
 | Twilio Media Streams | https://www.twilio.com/docs/voice/media-streams | Audio framing, WS message format, streamSid |
 | Twilio Programmable Voice | https://www.twilio.com/docs/voice/twiml | TwiML verbs, conference, gather |
 | Twilio Conference | https://www.twilio.com/docs/voice/api/conference-resource | Participant API, status callbacks |
+| Exa Search API | [docs/exa-search-api.md](docs/exa-search-api.md) | Any Exa search call — params, types, snake_case vs camelCase, common mistakes |
 
 **Rule:** If a task touches Deepgram, ElevenLabs, or Twilio — fetch the relevant
 doc page first with WebFetch. Configs, event names, and audio format parameters
 change frequently. A wrong format (e.g. wrong mulaw sample rate) silently breaks
 audio with no error. Always verify against live docs.
+
+**Rule:** If a task touches Exa search — read `docs/exa-search-api.md` first.
+Parameters must be nested under `contents`; Python uses snake_case, JS uses camelCase.
+Several deprecated params (`useAutoprompt`, `livecrawl`, `numSentences`) silently break calls.
 
 ---
 
