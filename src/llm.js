@@ -1,9 +1,10 @@
 require('dotenv').config();
 const Anthropic = require('@anthropic-ai/sdk');
-const axios = require('axios');
+const Exa = require('exa-js').default;
 const logger = require('./logger');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const exa = new Exa(process.env.EXA_API_KEY);
 
 const SYSTEM_PROMPT = `You are Chatter, an AI assistant participating in a live phone call between two people.
 You can hear the full conversation and respond when invoked.
@@ -28,16 +29,20 @@ const tools = [
 async function webSearch(query) {
   const start = Date.now();
   try {
-    const response = await axios.get('https://api.exa.ai/search', {
-      headers: { 'x-api-key': process.env.EXA_API_KEY, 'Content-Type': 'application/json' },
-      params: { query, num_results: 3, type: 'neural', use_autoprompt: true },
+    const result = await exa.searchAndContents(query, {
+      type: 'fast',
+      numResults: 3,
+      highlights: { numSentences: 3, highlightsPerUrl: 2 },
     });
-    const results = response.data.results || [];
-    const text = results.map(r => `${r.title}: ${r.text?.slice(0, 300)}`).join('\n\n');
-    logger.info({ latency_ms: Date.now() - start, results: results.length }, 'web search complete');
+    const results = result.results || [];
+    const text = results.map(r => {
+      const highlights = r.highlights?.join(' ') || r.text?.slice(0, 400) || '';
+      return `${r.title}: ${highlights}`;
+    }).join('\n\n');
+    logger.info({ latency_ms: Date.now() - start, results: results.length }, 'exa search complete');
     return text || 'No results found.';
   } catch (err) {
-    logger.error({ err: err.message }, 'web search failed');
+    logger.error({ err: err.message }, 'exa search failed');
     return 'Search unavailable.';
   }
 }

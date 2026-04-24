@@ -1,7 +1,10 @@
 require('dotenv').config();
 const WebSocket = require('ws');
+const Exa = require('exa-js').default;
 const { twilioToAgent, agentToTwilio, chunk } = require('./audio');
 const logger = require('./logger');
+
+const exa = new Exa(process.env.EXA_API_KEY);
 
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -20,6 +23,27 @@ When you do respond:
 - Never repeat back the question. Just answer.
 
 You are a helpful research assistant. Answer factual questions, give context, look things up.`;
+
+async function webSearch(query) {
+  const start = Date.now();
+  try {
+    const result = await exa.searchAndContents(query, {
+      type: 'fast',
+      numResults: 3,
+      highlights: { numSentences: 3, highlightsPerUrl: 2 },
+    });
+    const results = result.results || [];
+    const text = results.map(r => {
+      const highlights = r.highlights?.join(' ') || r.text?.slice(0, 400) || '';
+      return `${r.title}: ${highlights}`;
+    }).join('\n\n');
+    logger.info({ latency_ms: Date.now() - start, results: results.length }, 'exa search complete');
+    return text || 'No results found.';
+  } catch (err) {
+    logger.error({ err: err.message }, 'exa search failed');
+    return 'Search unavailable.';
+  }
+}
 
 /**
  * DeepgramAgent wraps the Deepgram Voice Agent WebSocket for one Chatter bot leg.
@@ -96,6 +120,19 @@ class DeepgramAgent {
           provider: { type: 'google', model: 'gemini-2.5-flash' },
           prompt: CHATTER_PROMPT,
           ...(GEMINI_API_KEY ? { api_key: GEMINI_API_KEY } : {}),
+          functions: [
+            {
+              name: 'web_search',
+              description: 'Search the web for current information. Use for recent facts, prices, news, or data not available from the conversation.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  query: { type: 'string', description: 'Search query' },
+                },
+                required: ['query'],
+              },
+            },
+          ],
         },
         speak: {
           provider: { type: 'deepgram', model: 'aura-2-odysseus-en' },
@@ -147,12 +184,39 @@ class DeepgramAgent {
         logger.info({ session_id: msg.session_id }, 'deepgram agent welcome');
         break;
 
+      case 'FunctionCallRequest':
+        this._handleFunctionCall(msg);
+        break;
+
       case 'Error':
         logger.error({ description: msg.description, code: msg.code }, 'deepgram agent error event');
         break;
 
       default:
         logger.debug({ type: msg.type }, 'deepgram agent event');
+    }
+  }
+
+  async _handleFunctionCall(msg) {
+    const { function_call_id, input } = msg;
+    const name = input?.name;
+    const args = input?.arguments;
+    logger.info({ function_call_id, name }, 'agent function call request');
+
+    let result = '';
+    if (name === 'web_search') {
+      const query = typeof args === 'string' ? JSON.parse(args).query : args?.query;
+      result = await webSearch(query);
+    } else {
+      result = `Unknown function: ${name}`;
+    }
+
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'FunctionCallResponse',
+        function_call_id,
+        output: result,
+      }));
     }
   }
 
