@@ -153,7 +153,7 @@ async function pollUntilDone(taskId) {
     const taskStatus = task.status;
 
     // Print any new transcript lines
-    printNewLines(task.transcript);
+    printNewLines(task.transcripts);
 
     if (taskStatus === 'completed') {
       console.log('\n--- Call completed ---');
@@ -239,7 +239,7 @@ async function main() {
     console.log('Call already in progress. Streaming transcript...\n');
   } else if (task.status === 'completed') {
     console.log('Task already completed.');
-    printNewLines(task.transcript);
+    printNewLines(task.transcripts);
     if (task.result) console.log('Result:', task.result);
     process.exit(0);
   } else if (task.status === 'failed') {
