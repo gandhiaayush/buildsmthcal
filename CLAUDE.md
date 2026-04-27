@@ -10,33 +10,24 @@ knowledge — these APIs evolve and the docs are the source of truth.
 | Deepgram home | https://developers.deepgram.com/home | Any Deepgram change |
 | Deepgram Voice Agent API | https://developers.deepgram.com/docs/voice-agent | Changing agent config, audio format, event types |
 | Deepgram STT streaming | https://developers.deepgram.com/docs/getting-started-with-live-streaming-audio | STT model params, endpointing |
-| ElevenLabs Agents | https://elevenlabs.io/docs/eleven-agents/overview | If switching to ElevenLabs agent |
-| ElevenLabs TTS API | https://elevenlabs.io/docs/api-reference/text-to-speech | TTS format, Flash v2, output_format param |
+| Twilio Programmable Voice | https://www.twilio.com/docs/voice | Webhook format, TwiML verbs, call lifecycle |
+| Twilio Media Streams | https://www.twilio.com/docs/voice/media-streams | WS protocol, audio format (mulaw 8kHz), frame size (160 bytes/20ms) |
 | Exa Search API | [docs/exa-search-api.md](docs/exa-search-api.md) | Any Exa search call — params, types, snake_case vs camelCase, common mistakes |
-| LiveKit Server SDK | https://docs.livekit.io/home/server-sdks/javascript/ | Token gen, room creation — `toJwt()` is async, must `await` |
-| LiveKit RTC Node | https://docs.livekit.io/home/client-sdks/javascript/node/ | AI agent joins room as participant |
-| LiveKit Swift SDK | https://docs.livekit.io/home/client-sdks/swift/ | iOS audio/room — check AVAudioSession + Info.plist rules |
-| LiveKit JS SDK | https://docs.livekit.io/home/client-sdks/javascript/ | Browser join — audio autoplay requires click handler |
-| LiveKit Rooms | https://docs.livekit.io/realtime/server/rooms/ | Room lifecycle, emptyTimeout, participant management |
 
-**Rule:** If a task touches Deepgram, ElevenLabs, or LiveKit — fetch the relevant
-doc page first with WebFetch. Configs, event names, and audio format parameters
-change frequently. A wrong format (e.g. wrong mulaw sample rate, wrong sample_rate value)
-silently breaks audio with no error. Always verify against live docs.
+**Rule:** If a task touches Deepgram, Twilio, or Gemini — fetch the relevant doc page
+first with WebFetch. Configs, event names, and audio format parameters change frequently.
+A wrong format (e.g. wrong mulaw sample rate) silently breaks audio with no error.
+Always verify against live docs.
 
-**Rule:** LiveKit has many silent failures — wrong values produce no errors, just broken audio or failed connections. Before writing any LiveKit token, room, or audio track code: fetch the relevant doc URL above AND read the LiveKit section in `AGENTS.md` for the silent-failure cheat sheet.
-
-**Critical LiveKit rules (never rely on memory):**
-- `token.toJwt()` is async in v2 — always `await` it
-- Grant must include `roomJoin: true` + `room` + `identity`
-- `emptyTimeout: 0` closes room immediately — use `600`+
-- iOS: leave `AVAudioSession` auto-config enabled; add `NSMicrophoneUsageDescription` to Info.plist
-- Browser: audio autoplay blocked — call `room.startAudio()` from a click handler
-- Webhooks: use `express.raw()` not `express.json()`
+**Critical audio pipeline rules (never rely on memory):**
+- Twilio Media Streams sends/receives **mulaw 8kHz, 160 bytes/frame (20ms)**
+- Deepgram Voice Agent input: **linear16 48kHz** — server must transcode
+- Deepgram Voice Agent output: **linear16 24kHz** — server must transcode back to mulaw 8kHz
 
 **Rule:** If a task touches Exa search — read `docs/exa-search-api.md` first.
-Parameters must be nested under `contents`; Python uses snake_case, JS uses camelCase.
-Several deprecated params (`useAutoprompt`, `livecrawl`, `numSentences`) silently break calls.
+The JS SDK (`exa-js`) passes `text` and `highlights` top-level to `searchAndContents()`.
+Python uses snake_case; JS uses camelCase. Several deprecated params (`useAutoprompt`,
+`livecrawl`, `numSentences`) silently break calls — verify against the local doc file.
 
 ---
 
@@ -51,7 +42,7 @@ Several deprecated params (`useAutoprompt`, `livecrawl`, `numSentences`) silentl
 - One reads current file state. One fetches live API docs. One checks existing patterns.
 - Never read files sequentially when parallel reads are possible.
 
-**FETCH LIVE DOCS** before any Deepgram, LiveKit, ElevenLabs, or iOS API call:
+**FETCH LIVE DOCS** before any Deepgram or Twilio API call:
 - Use WebFetch. Training knowledge on these APIs is stale.
 - Wrong audio format = silent failure. No exception, no error log, just broken audio.
 
@@ -64,20 +55,18 @@ Several deprecated params (`useAutoprompt`, `livecrawl`, `numSentences`) silentl
 
 **PARALLEL IS THE DEFAULT:**
 - Independent reads → single message with multiple tool calls
-- Backend (Node.js) + iOS (Swift) in same session → worktree isolation
 - Never serialize tool calls with no dependencies between them
 
 **NEVER WRITE AUDIO PARAMETERS FROM MEMORY:**
 - Always verify `sample_rate`, `encoding`, `container` against fetched docs
-- Deepgram Voice Agent formats: input linear16 48kHz, output linear16 24kHz
-- LiveKit delivers participant audio: linear16 48kHz (no codec needed for input)
+- Deepgram Voice Agent: input linear16 48kHz, output linear16 24kHz
+- Twilio Media Streams: mulaw 8kHz, 160 bytes/frame
 
 ### After each milestone
 
 **SPAWN REVIEW AGENT** before moving to next milestone:
 - Diff-based review → `/review` skill
-- Audio pipeline changed → `/qa` skill, test with real audio in two browser tabs
-- iOS screen added → test in iPhone 16 SE simulator before proceeding
+- Call flow changed → `/qa` skill, test with a real phone number
 
 ### Sub-agent routing
 
@@ -87,11 +76,8 @@ Several deprecated params (`useAutoprompt`, `livecrawl`, `numSentences`) silentl
 | New feature design | Plan agent |
 | Code review | invoke `/review` |
 | Bug in running code | invoke `/investigate` |
-| SwiftUI new screen | invoke `/swiftui-patterns` |
-| Swift concurrency | invoke `/swift-concurrency-6-2` |
-| iOS build broken | invoke `/investigate` |
 | Security concern | invoke `/cso` |
-| Audio pipeline change | invoke `/qa` after build |
+| Call flow changed | invoke `/qa` after build |
 
 ---
 
@@ -123,7 +109,7 @@ Key routing rules:
 - Update docs after shipping → invoke /document-release
 - Weekly retro, "how'd we do" → invoke /retro
 - Second opinion, codex review → invoke /codex
-- ANY task not directly core to the call/audio/LiveKit/iOS pipeline → invoke /codex to offload and preserve Claude Code usage
+- ANY task not directly core to the call/audio/Twilio/Deepgram pipeline → invoke /codex to offload and preserve Claude Code usage
 - Boilerplate, config files, scripts, docs, non-critical utilities → invoke /codex first
 - Safety mode, careful mode, lock it down → invoke /careful or /guard
 - Restrict edits to a directory → invoke /freeze or /unfreeze
@@ -138,6 +124,4 @@ Key routing rules:
 - Review what gstack has learned → invoke /learn
 - Tune question sensitivity → invoke /plan-tune
 - Code quality dashboard → invoke /health
-- SwiftUI screen, new View → invoke /swiftui-patterns
-- Swift concurrency issue → invoke /swift-concurrency-6-2
-- iOS build broken, Swift error → invoke /investigate
+- Web UI / dashboard work → invoke /design-html or /ui-demo
