@@ -13,6 +13,22 @@ const { routeToAgent } = require('./agent-router');
 const { findBusiness } = require('./search');
 const logger = require('./logger');
 const { requireAuth } = require('./middleware/auth');
+const twilio = require('twilio');
+
+// Validates that incoming POST is genuinely from Twilio.
+// Skipped in development (no BASE_URL set) to allow ngrok testing.
+function requireTwilioSignature(req, res, next) {
+  const webhookBase = process.env.TWILIO_WEBHOOK_BASE || process.env.BASE_URL;
+  if (!webhookBase) return next(); // dev — skip
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const signature = req.headers['x-twilio-signature'] || '';
+  const url = `${webhookBase}${req.originalUrl}`;
+  if (!twilio.validateRequest(authToken, signature, url, req.body)) {
+    logger.warn({ url }, 'rejected request with invalid Twilio signature');
+    return res.status(403).send('Forbidden');
+  }
+  next();
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -104,10 +120,13 @@ app.post('/tasks', requireAuth, async (req, res) => {
     phone_number: rawPhone,
     description,
     business_query: businessQuery,
-    location_hint: locationHint,
+    location_hint: parsedLocationHint,
     scheduled_at,
     user_context: userContext,
   } = parsed;
+
+  // Merge location from direct request body (sent by frontend geolocation) as fallback
+  const locationHint = parsedLocationHint || req.body.location_hint || null;
 
   if (!description) {
     return res.status(400).json({ error: 'Could not determine what to accomplish on the call.' });
@@ -130,11 +149,24 @@ app.post('/tasks', requireAuth, async (req, res) => {
     logger.info({ businessName, phoneNumber }, 'business resolved');
   }
 
-  const { agentType, agentMode } = await routeToAgent(description);
+  let agentType, agentMode;
+  try {
+    ({ agentType, agentMode } = await routeToAgent(description));
+  } catch (err) {
+    logger.error({ err: err.message }, 'routeToAgent failed');
+    return res.status(500).json({ error: 'Failed to route request to agent.' });
+  }
+
   const webhookBase = process.env.TWILIO_WEBHOOK_BASE || process.env.BASE_URL;
 
   // Merge profile personal context with any request-level context
-  const profileContext = await db.getUserContext(req.user.id);
+  let profileContext;
+  try {
+    profileContext = await db.getUserContext(req.user.id);
+  } catch (err) {
+    logger.warn({ err: err.message }, 'getUserContext failed — continuing without profile');
+    profileContext = null;
+  }
   const mergedContext = userContext
     ? `${JSON.stringify(profileContext)}\n${userContext}`
     : JSON.stringify(profileContext);
@@ -229,7 +261,7 @@ app.delete('/tasks/:id', requireAuth, async (req, res) => {
 // Twilio webhooks — no auth (Twilio calls these, not users)
 // ---------------------------------------------------------------------------
 
-app.post('/outbound-twiml', (req, res) => {
+app.post('/outbound-twiml', requireTwilioSignature, (req, res) => {
   const taskId = req.query.taskId || req.body.taskId;
   const host = getHost(req);
 
@@ -244,7 +276,7 @@ app.post('/outbound-twiml', (req, res) => {
 </Response>`);
 });
 
-app.post('/call-status', async (req, res) => {
+app.post('/call-status', requireTwilioSignature, async (req, res) => {
   const callStatus = req.body.CallStatus;
   const callSid = req.body.CallSid;
 
@@ -306,6 +338,13 @@ app.ws('/stream', (ws, _req) => {
         const task = await db.getTask(taskId);
         if (!task) {
           logger.error({ taskId }, 'task not found for stream');
+          ws.close();
+          return;
+        }
+        // Verify the callSid from Twilio matches what we stored when the call was placed.
+        // Guards against a rogue WebSocket client supplying a known taskId.
+        if (task.call_sid && task.call_sid !== callSid) {
+          logger.error({ taskId, expected: task.call_sid, got: callSid }, 'callSid mismatch — closing stream');
           ws.close();
           return;
         }
