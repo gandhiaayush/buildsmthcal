@@ -1,161 +1,270 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
-import Link from 'next/link'
-import { AnimatedAIChat } from '@/components/ui/animated-ai-chat'
-import { Badge } from '@/components/ui/badge'
-import { Zap } from 'lucide-react'
-import { createClient } from '@/lib/supabase/client'
-import { statusConfig } from '@/lib/status'
+import { useEffect, useState, useRef } from 'react'
 import { toast } from 'sonner'
 
-const GOOEY_PROMPTS = [
-  'Make a restaurant reservation for tonight',
-  "Schedule a doctor's appointment",
-  'Dispute my cable bill',
-]
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'
 
-type Task = {
+type Appointment = {
   id: string
-  description: string
-  business_name: string | null
+  patient_id: string
+  scheduled_at: string
+  appointment_type: string
+  provider_name: string | null
   status: string
-  created_at: string
+  risk_score: number | null
+  risk_reason: string | null
+  outreach_status: string
+  patients: { name: string; phone: string } | null
 }
 
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
+type WaitlistEntry = {
+  id: string
+  desired_slot: string
+  desired_provider: string | null
+  priority_score: number
+  claimed_at: string | null
+  patients: { name: string } | null
+}
+
+function riskColor(score: number | null) {
+  if (score === null) return 'bg-gray-500/20 text-gray-400'
+  if (score >= 0.7) return 'bg-red-500/20 text-red-400 font-bold'
+  if (score >= 0.4) return 'bg-yellow-500/20 text-yellow-400'
+  return 'bg-green-500/20 text-green-400'
+}
+
+function outreachBadge(status: string) {
+  const map: Record<string, string> = {
+    pending: 'bg-gray-500/20 text-gray-400',
+    called: 'bg-blue-500/20 text-blue-400',
+    confirmed: 'bg-green-500/20 text-green-400',
+    rescheduled: 'bg-purple-500/20 text-purple-400',
+    failed: 'bg-red-500/20 text-red-400',
+  }
+  return map[status] || 'bg-gray-500/20 text-gray-400'
+}
+
+function fmt(iso: string) {
+  return new Date(iso).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  })
 }
 
 export default function DashboardPage() {
-  const router = useRouter()
-  const [tasks, setTasks] = useState<Task[]>([])
-  const [loading, setLoading] = useState(false)
-  const [locationHint, setLocationHint] = useState<string | null>(null)
-  const supabase = createClient()
+  const [appointments, setAppointments] = useState<Appointment[]>([])
+  const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([])
+  const [calling, setCalling] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const fileRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setLocationHint(localStorage.getItem('chatter_location_hint'))
-    }
-  }, [])
-
-  useEffect(() => {
-    async function fetchTasks() {
-      const { data } = await supabase
-        .from('tasks')
-        .select('id, description, business_name, status, created_at')
-        .order('created_at', { ascending: false })
-        .limit(5)
-      setTasks(data || [])
-    }
-    fetchTasks()
-  }, [])
-
-  const handleLocationDetected = useCallback((hint: string) => {
-    setLocationHint(hint)
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('chatter_location_hint', hint)
-    }
-  }, [])
-
-  const handleSubmit = useCallback(async (value: string) => {
-    setLoading(true)
+  async function fetchData() {
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) { router.push('/login'); return }
-
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/tasks`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ request: value, location_hint: locationHint }),
-      })
-
-      if (!res.ok) throw new Error(await res.text())
-      const task = await res.json()
-      router.push(`/tasks/${task.id}`)
-    } catch (err) {
-      toast.error('Failed to start call. Please try again.')
-      console.error(err)
+      const [apptRes, wlRes] = await Promise.all([
+        fetch(`${API}/api/appointments/all`),
+        fetch(`${API}/api/waitlist`),
+      ])
+      if (apptRes.ok) setAppointments(await apptRes.json())
+      if (wlRes.ok) setWaitlist(await wlRes.json())
+    } catch {
+      toast.error('Failed to load data')
     } finally {
       setLoading(false)
     }
-  }, [locationHint, router, supabase])
+  }
 
-  const recentTasks = tasks.slice(0, 5)
-  const totalCalls = tasks.length
+  useEffect(() => { fetchData() }, [])
+
+  async function handleCSVUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploading(true)
+    const fd = new FormData()
+    fd.append('file', file)
+    try {
+      const res = await fetch(`${API}/api/upload-csv`, { method: 'POST', body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Upload failed')
+      toast.success(`Ingested ${data.total} appointments`)
+      await fetchData()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Upload failed')
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  async function handleCallNow(appointmentId: string) {
+    setCalling(appointmentId)
+    try {
+      const res = await fetch(`${API}/api/calls/trigger`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appointment_id: appointmentId }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Call failed')
+      toast.success('Call initiated via Retell AI')
+      await fetchData()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Call failed')
+    } finally {
+      setCalling(null)
+    }
+  }
 
   return (
-    <div className="flex flex-col items-center min-h-full px-6 py-12">
-      {/* Hero */}
-      <div className="w-full max-w-2xl space-y-1 mb-8 text-center">
-        <div className="flex items-center justify-center gap-2">
-          <Zap className="w-5 h-5 text-primary" />
-          <h1 className="text-2xl font-bold tracking-tight">Outbound AI</h1>
-        </div>
-        {totalCalls > 0 && (
-          <p className="text-sm text-muted-foreground">
-            {totalCalls} {totalCalls === 1 ? 'call' : 'calls'} made
+    <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Cadence</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            No-show prevention for mental health practices
           </p>
-        )}
+        </div>
+        <div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={handleCSVUpload}
+          />
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50 transition"
+          >
+            {uploading ? 'Uploading…' : '↑ Upload CSV'}
+          </button>
+        </div>
       </div>
 
-      {/* Chat input */}
-      <div className="w-full max-w-2xl">
-        <AnimatedAIChat
-          onSubmit={handleSubmit}
-          loading={loading}
-          locationHint={locationHint}
-          onLocationDetected={handleLocationDetected}
-          showHeading={false}
-          animatedPlaceholderTexts={GOOEY_PROMPTS}
-        />
-      </div>
-
-      {/* Recent calls */}
-      {recentTasks.length > 0 && (
-        <div className="w-full max-w-2xl mt-10 space-y-3">
-          <p className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground/60 px-1">
-            Recent calls
-          </p>
-          <div className="space-y-1">
-            {recentTasks.map((task) => {
-              const cfg = statusConfig[task.status] ?? statusConfig.failed
-              return (
-                <Link
-                  key={task.id}
-                  href={`/tasks/${task.id}`}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors group"
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cfg.dotClass}`} />
-                  <span className="flex-1 text-sm text-foreground/80 truncate group-hover:text-foreground transition-colors">
-                    {task.description}
-                  </span>
-                  <Badge
-                    variant="outline"
-                    className={`text-xs shrink-0 rounded-md px-1.5 py-0.5 border ${cfg.badgeClass}`}
-                  >
-                    {cfg.label}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground/50 shrink-0 w-12 text-right">
-                    {timeAgo(task.created_at)}
-                  </span>
-                </Link>
-              )
-            })}
-          </div>
+      {/* Appointments Table */}
+      <section>
+        <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+          Appointments
+        </h2>
+        <div className="rounded-xl border border-border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 border-b border-border">
+              <tr>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Patient</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Scheduled</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Type</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Provider</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Risk</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground max-w-xs">Reason</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Status</th>
+                <th className="px-4 py-3" />
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={8} className="text-center py-8 text-muted-foreground">
+                    Loading…
+                  </td>
+                </tr>
+              ) : appointments.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="text-center py-8 text-muted-foreground">
+                    No appointments yet. Upload a CSV to get started.
+                  </td>
+                </tr>
+              ) : (
+                appointments.map((a) => (
+                  <tr key={a.id} className="border-t border-border hover:bg-muted/20 transition-colors">
+                    <td className="px-4 py-3 font-medium">
+                      {a.patients?.name ?? '—'}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                      {fmt(a.scheduled_at)}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{a.appointment_type}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{a.provider_name ?? '—'}</td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-block px-2 py-0.5 rounded-md text-xs ${riskColor(a.risk_score)}`}>
+                        {a.risk_score !== null ? a.risk_score.toFixed(2) : '—'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground text-xs max-w-xs truncate">
+                      {a.risk_reason ?? '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-block px-2 py-0.5 rounded-md text-xs capitalize ${outreachBadge(a.outreach_status)}`}>
+                        {a.outreach_status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => handleCallNow(a.id)}
+                        disabled={calling === a.id || a.outreach_status === 'confirmed'}
+                        className="px-3 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed transition whitespace-nowrap"
+                      >
+                        {calling === a.id ? 'Calling…' : 'Call Now'}
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
-      )}
+      </section>
+
+      {/* Waitlist */}
+      <section>
+        <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+          Waitlist
+        </h2>
+        <div className="rounded-xl border border-border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 border-b border-border">
+              <tr>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Patient</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Desired Slot</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Provider</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Priority</th>
+                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {waitlist.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="text-center py-8 text-muted-foreground">
+                    No patients on waitlist.
+                  </td>
+                </tr>
+              ) : (
+                waitlist.map((w) => (
+                  <tr key={w.id} className="border-t border-border hover:bg-muted/20 transition-colors">
+                    <td className="px-4 py-3 font-medium">{w.patients?.name ?? '—'}</td>
+                    <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                      {fmt(w.desired_slot)}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{w.desired_provider ?? 'Any'}</td>
+                    <td className="px-4 py-3">
+                      <span className="text-xs text-muted-foreground">
+                        {(w.priority_score * 100).toFixed(0)}%
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-block px-2 py-0.5 rounded-md text-xs ${w.claimed_at ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'}`}>
+                        {w.claimed_at ? 'Claimed' : 'Waiting'}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   )
 }

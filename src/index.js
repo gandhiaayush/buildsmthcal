@@ -1,19 +1,17 @@
 require('dotenv').config();
 
 const REQUIRED_ENV = [
-  'DEEPGRAM_API_KEY',
-  'GEMINI_API_KEY',
+  'INSFORGE_URL',
+  'INSFORGE_KEY',
+  'RETELL_API_KEY',
+  'RETELL_AGENT_ID',
+  'RETELL_PHONE_NUMBER',
   'TWILIO_ACCOUNT_SID',
   'TWILIO_AUTH_TOKEN',
-  'TWILIO_PHONE_NUMBER',
-  'SUPABASE_URL',
-  'SUPABASE_SERVICE_ROLE_KEY',
-  'SUPABASE_ANON_KEY',
 ];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
-    console.error(`Missing required env var: ${key}`);
-    process.exit(1);
+    console.warn(`Warning: Missing env var: ${key} — some features may not work`);
   }
 }
 
@@ -23,12 +21,7 @@ const logger = require('./logger');
 
 const PORT = process.env.PORT || 3000;
 
-const webhookBase = process.env.TWILIO_WEBHOOK_BASE || process.env.BASE_URL;
-if (!webhookBase) {
-  logger.warn('TWILIO_WEBHOOK_BASE not set — Twilio webhooks will fail');
-}
-
 server.listen(PORT, () => {
-  logger.info({ port: PORT, webhookBase }, 'server started');
+  logger.info({ port: PORT }, 'Cadence server started');
   startScheduler();
 });

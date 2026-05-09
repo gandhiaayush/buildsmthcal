@@ -1,33 +1,40 @@
 
-## Documentation — fetch these before building anything
+## Documentation-First Rule
 
-Before writing any code or making architecture decisions for this project,
-fetch and read the relevant documentation. Do not rely solely on training
-knowledge — these APIs evolve and the docs are the source of truth.
+Before writing code that touches any external API, library, or SDK not yet
+verified this session: look up current documentation first (web search,
+official docs, or local `docs/` folder). Don't rely on memory for anything
+version-specific or recently updated. For routine operations on well-known
+tools already verified this session, use discretion.
+
+The APIs below have local docs or known-stale-risk — always check these:
 
 | What | URL | When to fetch |
 |------|-----|---------------|
-| Deepgram home | https://developers.deepgram.com/home | Any Deepgram change |
-| Deepgram Voice Agent API | https://developers.deepgram.com/docs/voice-agent | Changing agent config, audio format, event types |
-| Deepgram STT streaming | https://developers.deepgram.com/docs/getting-started-with-live-streaming-audio | STT model params, endpointing |
+| **InsForge SDK + CLI** | [docs/insforge-api.md](docs/insforge-api.md) | Any InsForge change — DB, auth, storage, AI, realtime, payments, functions |
+| **Retell AI create-agent** | https://docs.retellai.com/api-references/create-agent | Creating/updating Retell agents |
+| **Retell AI create-phone-call** | https://docs.retellai.com/api-references/create-phone-call | Triggering outbound calls |
+| **Retell AI webhook** | https://docs.retellai.com/webhook | Webhook event format, signature verification |
 | Twilio Programmable Voice | https://www.twilio.com/docs/voice | Webhook format, TwiML verbs, call lifecycle |
 | Twilio Media Streams | https://www.twilio.com/docs/voice/media-streams | WS protocol, audio format (mulaw 8kHz), frame size (160 bytes/20ms) |
-| Exa Search API | [docs/exa-search-api.md](docs/exa-search-api.md) | Any Exa search call — params, types, snake_case vs camelCase, common mistakes |
 
-**Rule:** If a task touches Deepgram, Twilio, or Gemini — fetch the relevant doc page
-first with WebFetch. Configs, event names, and audio format parameters change frequently.
-A wrong format (e.g. wrong mulaw sample rate) silently breaks audio with no error.
+**Rule:** If a task touches InsForge — invoke `/insforge` (SDK) or `/insforge-cli` (backend infra) skill first, then read `docs/insforge-api.md`. Never write InsForge SDK calls or CLI commands from memory.
+
+**Rule:** If a task touches Retell AI — fetch the relevant doc page first with WebFetch.
+Field names and event types change; wrong field name = silent failure (API returns 400 with allowed values list).
 Always verify against live docs.
 
-**Critical audio pipeline rules (never rely on memory):**
-- Twilio Media Streams sends/receives **mulaw 8kHz, 160 bytes/frame (20ms)**
-- Deepgram Voice Agent input: **linear16 48kHz** — server must transcode
-- Deepgram Voice Agent output: **linear16 24kHz** — server must transcode back to mulaw 8kHz
+**Critical Retell AI facts (verified 2026-05-09 — still verify before changes):**
+- Outbound calls: `POST /v2/create-phone-call` with `from_number`, `to_number`, `override_agent_id`, `retell_llm_dynamic_variables`
+- Dynamic variables injected as `{{variable_name}}` in Retell LLM prompt — no per-call agent update needed
+- LLM model (exact string): `claude-4.6-sonnet` — Retell rejects other strings with 400
+- Voice (verified working): `cartesia-Cleo`
+- Webhook signature: `x-retell-signature` = HMAC-SHA256(RETELL_API_KEY, rawBody)
+- Key webhook event: `call_analyzed` (fires after call ends with transcript + analysis)
+- Deepgram Voice Agent: **commented out in src/agent.js** — DO NOT re-enable
 
-**Rule:** If a task touches Exa search — read `docs/exa-search-api.md` first.
-The JS SDK (`exa-js`) passes `text` and `highlights` top-level to `searchAndContents()`.
-Python uses snake_case; JS uses camelCase. Several deprecated params (`useAutoprompt`,
-`livecrawl`, `numSentences`) silently break calls — verify against the local doc file.
+**Critical audio pipeline rules (Twilio Media Streams — if using Twilio path):**
+- Twilio Media Streams sends/receives **mulaw 8kHz, 160 bytes/frame (20ms)**
 
 ---
 
@@ -78,6 +85,10 @@ Python uses snake_case; JS uses camelCase. Several deprecated params (`useAutopr
 | Bug in running code | invoke `/investigate` |
 | Security concern | invoke `/cso` |
 | Call flow changed | invoke `/qa` after build |
+| InsForge SDK code (DB, auth, storage, AI, realtime, email, payments, functions) | invoke `/insforge` skill first |
+| InsForge backend infra (migrations, secrets, deployments, compute, schedules, logs) | invoke `/insforge-cli` skill first |
+| InsForge bug / unexpected behavior | invoke `/insforge-debug` skill |
+| InsForge 3rd-party integrations (PostHog, etc.) | invoke `/insforge-integrations` skill |
 
 ---
 
@@ -125,3 +136,27 @@ Key routing rules:
 - Tune question sensitivity → invoke /plan-tune
 - Code quality dashboard → invoke /health
 - Web UI / dashboard work → invoke /design-html or /ui-demo
+
+## InsForge Skill Routing
+
+**MANDATORY: always invoke the relevant skill before writing InsForge code.**
+
+| Task | Skill |
+|------|-------|
+| DB CRUD, auth, storage, AI, realtime, email, payments, functions (SDK code) | `/insforge` |
+| Schema migrations, secrets, deployments, compute, schedules, branches, logs (CLI ops) | `/insforge-cli` |
+| Debugging InsForge errors or unexpected behavior | `/insforge-debug` |
+| PostHog analytics, 3rd-party integrations via InsForge | `/insforge-integrations` |
+
+**Skill invocation triggers:**
+- Writing `insforge.database`, `insforge.auth`, `insforge.storage`, `insforge.ai`, `insforge.realtime`, `insforge.emails`, `insforge.payments`, `insforge.functions` → `/insforge`
+- Running `npx @insforge/cli db migrations`, `secrets`, `deployments`, `compute`, `schedules`, `functions deploy`, `branch` → `/insforge-cli`
+- InsForge error, 4xx/5xx from InsForge backend, broken auth/query → `/insforge-debug`
+- "InsForge MCP's fetch-docs" → invoke both `/insforge` and `/insforge-cli` skills
+
+**Never:**
+- Use `@insforge/react`, `@insforge/nextjs`, `@insforge/react-router` (deprecated)
+- Install CLI globally (`npm install -g @insforge/cli`) — always `npx`
+- Put `api_key` from `.insforge/project.json` in frontend code
+- Write AI model IDs from memory — query `ai.configs` table first
+- Use `insert({...})` — always `insert([{...}])`

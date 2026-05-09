@@ -1,104 +1,51 @@
-# Outbound AI — Architecture Decision Records
+# Cadence — Architecture Decision Records
 
 Single reference for every non-obvious engineering choice.
 Update when a decision changes. Date each entry.
 
 ---
 
-## ADR-001: Deepgram Voice Agent as conversation engine (2026-04-26)
+## ADR-001: Deepgram Voice Agent as conversation engine (2026-04-26) [SUPERSEDED by ADR-009]
 
 **Decision:** Use Deepgram Voice Agent (single bidirectional WebSocket) for the
 entire STT → LLM → TTS pipeline instead of three separate API calls.
 
-**Alternatives rejected:**
-- Deepgram STT → Claude → ElevenLabs TTS: Three separate API calls per turn,
-  multiple points of failure, latency from chaining. Eliminated.
-- Deepgram STT → Gemini → Deepgram TTS: Same chaining problem.
-
-**Why Voice Agent wins:**
-- One WebSocket handles STT (Nova-2), LLM (Gemini 2.5 Flash), TTS (Aura) internally
-- Audio I/O in one place — no inter-service audio routing
-- Eliminates ElevenLabs mulaw compatibility as a blocker
-- Built-in function calling via `think.functions` config
-
-**Accepted trade-offs:**
-- Less control over individual components (can't swap TTS voice easily)
-- Gemini is the only LLM option (can't use Claude directly in the agent loop)
-- Voice Agent pricing includes all three components — no mix-and-match cost optimization
+**Status:** Superseded. See ADR-009. `src/agent.js` is commented out.
 
 ---
 
-## ADR-002: Two separate Gemini calls — parse then route (2026-04-26)
+## ADR-002: Two separate Gemini calls — parse then route (2026-04-26) [DEPRECATED]
 
-**Decision:** Task creation uses two sequential Gemini 2.5 Flash calls:
-1. Parse the natural language request → structured fields (phone, description, schedule, context)
-2. Route the description → agent_type + agent_mode
-
-**Why not combined:** Routing logic needs to evolve independently of parsing logic.
-Mixing them into one prompt makes prompt engineering fragile — a change to the routing
-criteria risks breaking field extraction and vice versa.
-
-**Why Gemini not Claude:** User has Gemini API key. Cost. Gemini 2.5 Flash is
-sufficient for structured extraction and classification tasks.
+**Status:** Deprecated. Cadence does not use Gemini. Risk scoring is deterministic (ADR-012).
 
 ---
 
-## ADR-003: SQLite WAL for persistence (2026-04-26)
+## ADR-003: SQLite WAL for persistence (2026-04-26) [SUPERSEDED by ADR-010]
 
-**Decision:** Use `better-sqlite3` with WAL journal mode for tasks + transcripts.
-
-**Why not Postgres/Redis:** Zero infra. Single-server MVP. SQLite handles the
-read/write pattern (frequent transcript inserts, occasional task reads) fine
-at this scale.
-
-**WAL mode reason:** node-cron scheduler ticks every minute, potentially reading
-while Express is writing. WAL allows concurrent readers without blocking writers.
-
-**Schema migration strategy:** Additive-only via `try/catch ALTER TABLE`. No migration
-tool. Safe to re-run on startup. If a column already exists, the error is swallowed.
+**Status:** Superseded. Replaced by InsForge (PostgreSQL). See ADR-010.
 
 ---
 
 ## ADR-004: Atomic task claim in scheduler (2026-04-26)
 
-**Decision:** Scheduler uses `UPDATE tasks SET status = 'calling' WHERE id = ? AND status = 'pending'`
-to claim a task before firing it. If `changes === 0`, another process already claimed it — skip.
+**Decision:** Scheduler uses atomic UPDATE via PostgreSQL RPC to claim a task before firing.
+Pattern retained in Cadence — see `claim_appointment_outreach` and `claim_waitlist_slot` RPCs.
 
-**Why:** node-cron fires on every minute tick. If the server restarts mid-tick, or if
-two processes run simultaneously, the same scheduled task could fire twice (duplicate calls).
-The atomic UPDATE prevents double-fire without a distributed lock.
+**Why:** Prevents double-fire if scheduler ticks overlap or server restarts mid-tick.
 
 ---
 
-## ADR-005: mark_complete as the call termination signal (2026-04-26)
+## ADR-005: mark_complete as call termination signal (2026-04-26) [DEPRECATED]
 
-**Decision:** The Deepgram Voice Agent is given a `mark_complete` function tool.
-When the agent calls it, the server receives a `FunctionCallRequest`, updates the
-task status + result in SQLite, then calls Twilio `calls(callSid).update({ status: 'completed' })`
-to hang up.
-
-**Why not hang up on call end event:** The call end event fires after the call is
-already over. `mark_complete` lets the agent signal task completion before the call
-ends, capturing the result while the WebSocket is still alive.
-
-**Required behavior:** Every system prompt in `agent-configs.js` instructs the agent
-to always call `mark_complete` when done — whether successful, voicemail, or failed.
-Without this, calls run until Twilio's timeout.
+**Status:** Deprecated. Retell AI manages its own call termination. Call outcomes
+are received via `call_analyzed` webhook event (see ADR-009).
 
 ---
 
-## ADR-006: Exa search + Gemini fallback for phone number lookup (2026-04-26)
+## ADR-006: Exa search for phone number lookup (2026-04-26) [DEPRECATED]
 
-**Decision:** When a task has no phone number, use:
-1. Exa `searchAndContents` to find business pages
-2. Regex extraction on text/highlights (fast, no LLM cost)
-3. Gemini fallback if regex finds nothing (parse Exa content)
-
-**Known limitation:** Phone numbers extracted this way can be wrong (wrong location,
-outdated listing). No validation that the number is correct before dialing.
-
-**Acceptable for now:** Internal use only. Fix when false dials become a problem.
-Long-term: Google Places API or similar verified directory.
+**Status:** Deprecated. Cadence dials phone numbers from the `patients` table (loaded via CSV).
+No outbound phone lookup needed.
 
 ---
 
@@ -107,48 +54,111 @@ Long-term: Google Places API or similar verified directory.
 **Decision:** Use Pino for all server logging. JSON in production, pretty-print in dev.
 
 **What is logged at minimum:**
-- Deepgram WS open/close/error (taskId)
-- Agent routing decision (description, agentType, agentMode)
-- mark_complete received (taskId, result)
-- Call status updates (callSid, callStatus)
-- All errors with taskId + message
+- Retell call trigger (appointmentId, retellCallId)
+- Webhook events received (callId, event type)
+- Outcome + sentiment classification (callId, outcome, sentiment)
+- Waitlist backfill trigger (openedSlot, provider, claimed)
+- All errors with context
 
-**Why:** Without structured logs, debugging a failed call after the fact is impossible.
-Querying by taskId shows the full lifecycle of a call in sequence.
+**Still applies in Cadence.**
 
 ---
 
-## ADR-008: CLI as primary interface (2026-04-26)
+## ADR-008: CLI as primary interface (2026-04-26) [SUPERSEDED]
 
-**Decision:** The primary UX is a CLI that submits a task and streams the transcript
-live via 2-second polling of `GET /tasks/:id`.
+**Status:** Superseded. Cadence uses a Next.js frontend dashboard as primary interface.
+No CLI task submission. See frontend/src/app/(app)/dashboard/page.tsx.
 
-**Why not a web UI:** Fastest to build and use. The transcript stream IS the product
-experience — a terminal does this well. Web UI is a future milestone.
+---
 
-**Why polling not WebSocket/SSE:** Simpler. The 2s polling lag is acceptable for
-a transcript viewer. SSE or WebSocket would be needed only if sub-second streaming
-is required — it isn't for this use case.
+## ADR-009: Retell AI replaces Deepgram Voice Agent (2026-05-09)
 
-**Note:** CLI reads `task.transcripts` (the field returned by `db.getTask()`). Any
-code that reads `task.transcript` (no s) will silently receive `undefined`.
+**Decision:** Use Retell AI for the entire outbound voice pipeline (STT + LLM + TTS).
+`src/agent.js` (Deepgram Voice Agent) is commented out but retained for reference.
+
+**Why Retell AI:**
+- Full outbound call management — no Twilio TwiML required for the voice pipeline
+- Dynamic prompt variables per call (`{{patient_name}}` etc.) — no per-call agent mutation
+- Single `POST /v2/create-phone-call` to initiate + `call_analyzed` webhook for outcome
+- `claude-4.6-sonnet` LLM option — same model family as the rest of the stack
+- Simpler hackathon integration than custom Deepgram WS + Twilio Media Streams bridge
+
+**Accepted trade-offs:**
+- Retell controls the call lifecycle — less flexibility than raw Twilio + Deepgram
+- Agent must be pre-created (one-time setup via `scripts/setup-retell.js`)
+- Dynamic variables injected at call-creation time — prompt cannot change mid-call
+
+**Verified API facts (2026-05-09):**
+- LLM model: `claude-4.6-sonnet` (exact string — Retell 400s on anything else)
+- Voice: `cartesia-Cleo` (verified from `/list-voices`)
+- Webhook: `call_analyzed` event contains transcript + analysis fields
+
+---
+
+## ADR-010: InsForge replaces Supabase (2026-05-09)
+
+**Decision:** Use InsForge (project `fy4p4tyq`) as the PostgreSQL backend.
+`@insforge/sdk` replaces `@supabase/supabase-js`.
+
+**Why InsForge:**
+- Sponsor integration for the hackathon
+- Same Postgres semantics — migration path is straightforward
+- `@insforge/cli` provides migration management identical to Supabase migrations
+
+**Key SDK differences from Supabase:**
+- `createClient({ baseUrl, anonKey })` — `anonKey` field (not `supabaseKey`)
+- `insforge.database.from()` — not `supabase.from()`
+- Insert requires array: `insert([{...}])` — NOT `insert({...})`
+- RPC via `.rpc('function_name', { arg1: val })` — same pattern as Supabase
+
+**Database schema:** 4 tables — `patients`, `appointments`, `waitlist`, `calls`.
+Two atomic RPCs: `claim_appointment_outreach` and `claim_waitlist_slot`.
+
+---
+
+## ADR-011: No frontend auth for v1 (2026-05-09)
+
+**Decision:** Dashboard is open (no login required). No auth middleware on any route.
+
+**Why:**
+- Hackathon demo does not need auth
+- Saves 2–3 hours of implementation + session handling complexity
+- Target deployment: internal clinic use on a private URL
+
+**Required before production:** Add auth (Retell webhook signature already validates
+inbound Retell calls; Twilio signature validation is in place on Twilio webhooks).
+
+---
+
+## ADR-012: Deterministic risk scoring (2026-05-09)
+
+**Decision:** Risk scoring (`src/risk-scoring.js`) is a weighted factor sum, no ML model.
+
+**Factors:** no_show history, appointment type, day of week, time of day, days since
+last visit, lead time. Score clamped [0, 1]. Returns plain-English reason.
+
+**Why not ML:**
+- No training data available at hackathon time
+- Deterministic = reproducible, explainable to clinic staff and judges
+- No external API cost or latency
+- Scores update synchronously on CSV upload — no async pipeline needed
+
+**Outreach threshold:** appointments with `risk_score >= 0.7` are flagged for
+automated outreach by the daily scheduler.
 
 ---
 
 ## Open Decisions
 
-1. **Business phone number validation** — no check that the found number is correct
-   before dialing. Need to evaluate Google Places API vs. manual confirmation step.
+1. **RETELL_PHONE_NUMBER** — user must add this from Retell dashboard to `.env`.
+   Without it, outbound calls fail at `createRetellCall`.
 
-2. **Web UI** — design direction (mission control aesthetic, amber accent, transcript as hero)
-   is documented in `.impeccable.md` at the project root. Not built yet. When building:
-   task input at top, live transcript stream in center, status indicators.
+2. **Concurrent call cap** — no hard cap enforced. Recommend ≤5 for demo.
+   `countActiveCalls()` is tracked in the `calls` table.
 
-3. **Concurrent call limit** — `countActive()` is tracked but no hard cap enforced.
-   Decide on max concurrent Twilio calls before exposing to non-founder users.
+3. **Phone number validation** — no E.164 normalization before dial.
+   Retell will reject malformed numbers with a 400. Flag as known limitation.
 
-4. **Auth on POST /tasks** — none. Any caller who can reach the server can trigger
-   outbound calls. Required before any non-localhost deployment.
-
-5. **Cost tracking** — no per-task cost logging. Needed before pricing decisions.
-   Track: Twilio minutes, Deepgram VA seconds, Gemini tokens per task.
+4. **Waitlist backfill timing** — triggered on `no_answer` / `declined` webhook outcome.
+   If Retell does not return these exact outcome strings, backfill won't fire.
+   Verify Retell's `call_analysis.call_successful` field semantics against live docs.

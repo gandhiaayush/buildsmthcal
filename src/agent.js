@@ -1,3 +1,6 @@
+/* DEEPGRAM VOICE AGENT — commented out, replaced by Retell AI
+   Retained for reference. Remove before production deploy.
+
 require('dotenv').config();
 const WebSocket = require('ws');
 const logger = require('./logger');
@@ -239,3 +242,5 @@ class OutboundAgent {
 }
 
 module.exports = OutboundAgent;
+
+*/
