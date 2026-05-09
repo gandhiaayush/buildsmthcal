@@ -3,6 +3,7 @@ import type { AppointmentRow } from "@/types";
 import { getPrepInstructions } from "@/lib/prep-instructions";
 import { buildPrepEmail } from "@/lib/email-templates/prep-email";
 import { createGmailTransport, gmailConfigured } from "@/lib/gmail-transport";
+import { friendlyGmailError } from "@/lib/gmail-error";
 
 export async function POST(req: NextRequest) {
   const {
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
       });
       return NextResponse.json({ success: true });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = friendlyGmailError(err);
       console.error("[send-prep] Gmail error:", message);
       return NextResponse.json({ success: false, error: message }, { status: 500 });
     }
