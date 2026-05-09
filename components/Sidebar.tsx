@@ -12,12 +12,14 @@ import {
   TrendingUp,
   Settings,
   Activity,
+  CalendarDays,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/upload", label: "Upload CSV", icon: Upload },
+  { href: "/upload", label: "Patient Upload", icon: Upload },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/insurance", label: "Insurance", icon: Shield },
   { href: "/referrals", label: "Referrals", icon: GitBranch },
   { href: "/prep", label: "Prep Push", icon: Stethoscope },

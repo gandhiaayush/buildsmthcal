@@ -6,32 +6,60 @@ import { MOCK_APPOINTMENTS } from "@/lib/mock-data";
 import { getPrepInstructions, formatProcedureName } from "@/lib/prep-instructions";
 import { PrepTimeline } from "@/components/PrepTimeline";
 import { formatTime } from "@/lib/utils";
-import { Mail, CheckCircle, Loader2, ChevronRight } from "lucide-react";
+import { Mail, CheckCircle, Loader2, ChevronRight, AlertCircle } from "lucide-react";
 
 export default function PrepPage() {
   const [appointments, setAppointments] = useState<AppointmentRow[]>(MOCK_APPOINTMENTS);
   const [selected, setSelected] = useState<AppointmentRow | null>(null);
-  const [email, setEmail] = useState("patient@demo.com");
+  const [patientEmails, setPatientEmails] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState<Set<string>>(new Set());
+  const [sent, setSent] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const saved = sessionStorage.getItem("appointments");
-    const appts: AppointmentRow[] = saved ? JSON.parse(saved) : MOCK_APPOINTMENTS;
+    const savedAppts = sessionStorage.getItem("appointments");
+    const appts: AppointmentRow[] = savedAppts ? JSON.parse(savedAppts) : MOCK_APPOINTMENTS;
     setAppointments(appts);
     setSelected(appts[0] ?? null);
+
+    const savedEmails = sessionStorage.getItem("patient-emails");
+    if (savedEmails) {
+      setPatientEmails(JSON.parse(savedEmails));
+    } else {
+      setPatientEmails(
+        Object.fromEntries(appts.map((a) => [a.patient_id, a.patient_email ?? ""]))
+      );
+    }
   }, []);
+
+  const email = selected ? (patientEmails[selected.patient_id] ?? "") : "";
+
+  function setEmail(val: string) {
+    if (!selected) return;
+    setPatientEmails((prev) => ({ ...prev, [selected.patient_id]: val }));
+  }
 
   async function sendPrep() {
     if (!selected) return;
     setSending(true);
+    setError(null);
     try {
-      await fetch("/api/send-prep", {
+      const res = await fetch("/api/send-prep", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ patient: selected, toEmail: email }),
       });
-      setSent((prev) => new Set(Array.from(prev).concat(selected.patient_id)));
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setError(data.error ?? "Email failed to send.");
+      } else {
+        setSent((prev) => ({
+          ...prev,
+          [selected.patient_id]: email,
+        }));
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Network error");
     } finally {
       setSending(false);
     }
@@ -56,7 +84,7 @@ export default function PrepPage() {
             {appointments.map((appt) => (
               <button
                 key={appt.patient_id}
-                onClick={() => setSelected(appt)}
+                onClick={() => { setSelected(appt); setError(null); }}
                 className={`w-full text-left px-3 py-3 rounded-lg border transition-colors flex items-center justify-between gap-2 ${
                   selected?.patient_id === appt.patient_id
                     ? "bg-blue-50 border-blue-300 text-blue-900"
@@ -68,9 +96,14 @@ export default function PrepPage() {
                   <p className="text-xs text-gray-500 mt-0.5">
                     {formatProcedureName(appt.appointment_type)} · {formatTime(appt.appointment_time)}
                   </p>
+                  {patientEmails[appt.patient_id] && (
+                    <p className="text-xs text-blue-600 mt-0.5 truncate">
+                      {patientEmails[appt.patient_id]}
+                    </p>
+                  )}
                 </div>
-                <div className="flex items-center gap-1">
-                  {sent.has(appt.patient_id) && (
+                <div className="flex items-center gap-1 shrink-0">
+                  {sent[appt.patient_id] && (
                     <CheckCircle className="w-4 h-4 text-green-500" />
                   )}
                   <ChevronRight className="w-4 h-4 text-gray-400" />
@@ -93,9 +126,9 @@ export default function PrepPage() {
                       {selected.doctor_name} · {formatTime(selected.appointment_time)}
                     </p>
                   </div>
-                  {sent.has(selected.patient_id) && (
+                  {sent[selected.patient_id] && (
                     <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 bg-green-50 text-green-700 border border-green-200 rounded-full font-medium">
-                      <CheckCircle className="w-3.5 h-3.5" /> Prep email sent
+                      <CheckCircle className="w-3.5 h-3.5" /> Sent to {sent[selected.patient_id]}
                     </span>
                   )}
                 </div>
@@ -106,6 +139,12 @@ export default function PrepPage() {
               {/* Send form */}
               <div className="bg-white border rounded-xl p-4 shadow-sm space-y-3">
                 <h3 className="font-medium text-gray-900 text-sm">Send Prep Email</h3>
+                {error && (
+                  <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{error}</span>
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <input
                     type="email"
@@ -116,7 +155,7 @@ export default function PrepPage() {
                   />
                   <button
                     onClick={sendPrep}
-                    disabled={sending || sent.has(selected.patient_id)}
+                    disabled={sending || !email.trim() || !!sent[selected.patient_id]}
                     className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-medium transition-colors"
                   >
                     {sending ? (
@@ -124,9 +163,14 @@ export default function PrepPage() {
                     ) : (
                       <Mail className="w-4 h-4" />
                     )}
-                    {sent.has(selected.patient_id) ? "Sent!" : "Send"}
+                    {sent[selected.patient_id] ? "Sent!" : sending ? "Sending…" : "Send"}
                   </button>
                 </div>
+                {!email.trim() && (
+                  <p className="text-xs text-amber-600">
+                    No email set — enter one above or set it on the Upload tab first.
+                  </p>
+                )}
               </div>
             </>
           ) : (

@@ -23,7 +23,7 @@ This project is split across **three separate codebases** that must integrate cl
 │  - Insurance pre-verification UI                │
 │  - Referral gap display                         │
 │  - Appointment prep push UI                     │
-│  - Email server (Resend)                        │
+│  - Email server (Gmail SMTP via nodemailer)                        │
 │  - Morning briefing display                     │
 │  - Revenue impact dashboard                     │
 └──────────────┬──────────────────────────────────┘
@@ -54,7 +54,7 @@ This project is split across **three separate codebases** that must integrate cl
 |---|---|
 | Framework | Next.js 14 (App Router) |
 | Styling | Tailwind CSS + shadcn/ui |
-| Email | Resend |
+| Email | Gmail SMTP via nodemailer |
 | CSV Parsing | papaparse |
 | Charts | Recharts |
 | State | React useState / useReducer (no external state lib) |
@@ -96,7 +96,7 @@ This project is split across **three separate codebases** that must integrate cl
   /api-contracts.ts   → TypeScript types for all API interfaces
   /insurance-list.ts  → hardcoded accepted insurance providers
   /prep-instructions.ts → procedure-to-instruction map
-  /email-templates/   → Resend email templates
+  /email-templates/   → nodemailer HTML email templates
 /types
   index.ts            → shared types used across frontend and API routes
 ```
@@ -186,7 +186,8 @@ These are the agreed interfaces between the frontend and the two backend engines
 export type AppointmentRow = {
   patient_id: string
   patient_name: string
-  appointment_time: string       // ISO string
+  patient_email?: string             // pre-populated from CSV if present; editable in UI
+  appointment_time: string           // ISO string
   appointment_type: ProcedureType
   doctor_name: string
   referral_source?: string
@@ -240,12 +241,17 @@ export type PrepInstruction = {
 
 ## Feature Specifications
 
-### 1. CSV Upload + Risk Score Display
-- Accept `.csv` files via drag-and-drop or file picker
-- Parse client-side with `papaparse`, validate required columns exist
-- POST parsed rows to `/api/risk-score` → proxied to Backend Engine
-- While loading: skeleton table with "Analyzing appointments..."
-- On response: render `RiskScoreTable` — color-coded rows (green/yellow/red), plain-language reasons, confidence badge
+### 1. Per-Patient CSV Upload + Risk Score Display
+- CSV upload is **per patient**, not a single bulk file for the whole clinic
+- Each patient card has its own **"Upload CSV"** button — opens a file picker scoped to that patient
+- Accept `.csv` files via file picker or drag-and-drop onto the patient card
+- Required CSV columns: `appointment_time`, `appointment_type`, `doctor_name`, `insurance_provider`, `prior_no_shows`, `confirmed`, `referral_source`
+- Parse client-side with `papaparse`, validate required columns exist before sending
+- POST parsed rows to `/api/risk-score` with `patient_id` attached → proxied to Backend Engine
+- While loading: show a spinner on that patient's card with "Analyzing..."
+- On response: render the patient's risk score inline on their card — color-coded badge (green/yellow/red), plain-language reasons, confidence level
+- Multiple patients can have CSVs uploaded independently and in parallel
+- **Patient email field**: each patient card has an editable **"Patient Email"** input field — nurse can type or paste the target email address before triggering any outreach. This email is used for all outreach sent to that patient (prep push, telehealth pivot). It is stored in local state per patient and pre-populated from the CSV if an `email` column is present.
 - **Mock fallback**: if backend engine is unreachable, use deterministic mock scores from `/lib/mock-data.ts`
 
 ### 2. Insurance Pre-Verification
@@ -305,14 +311,29 @@ ultrasound:
     - No special diet restrictions
 ```
 
-- UI flow: select patient → auto-detect procedure from CSV → preview two-stage instructions → send email via Resend
+- UI flow: select patient → auto-detect procedure from CSV → preview two-stage instructions → send email via Gmail SMTP (nodemailer)
 - Personalize email with patient name and clinic branding
 
 ### 5. Telehealth Pivot Email
-- Triggered for any patient with `risk_level: "high"` who has not confirmed by 8am day-of
-- `/api/telehealth-pivot` sends email via Resend
-- Email: "We noticed you haven't confirmed your [date] appointment. A same-day telehealth option is available. Click to confirm."
-- Log sent status; show "Telehealth offer sent" badge on patient card
+- Each unconfirmed high-risk patient card shows a **"Telehealth Pivot"** button
+- Button is only active when ALL of the following are true:
+  - `risk_level === "high"`
+  - Patient is unconfirmed
+  - Appointment is within 3 hours from now
+  - A target email address has been set for the patient (see Feature 1)
+- If no email is set, the button is disabled with tooltip: "Set patient email first"
+- Clicking the button fires `/api/telehealth-pivot` via Gmail SMTP (nodemailer)
+- **Gmail SMTP config** (in `/lib/gmail-transport.ts`):
+  - Host: `smtp.gmail.com`
+  - Port: `587`
+  - Encryption: `STARTTLS`
+  - Auth: Gmail address + Google App Password
+- **Email content**:
+  - Subject: `"Your upcoming appointment — a telehealth option is available"`
+  - Body: `"Hi [patient name], we noticed you haven't confirmed your [time] appointment today. If it's easier, we can switch you to a telehealth visit instead."`
+  - Two CTA buttons: **Confirm Telehealth** · **Keep In-Person**
+- After sending: button grays out, replaced with badge `"Telehealth offer sent [HH:MM]"`
+- Patient response (CTA click) logs back via webhook to `/api/telehealth-response` and updates the card status in real time
 
 ### 6. Morning Staff Briefing
 - Aggregates day's risk scores, overbooking flags, insurance issues, and referral gaps
@@ -330,7 +351,7 @@ ultrasound:
 - Clinic name
 - Average visit value (used in revenue calc)
 - Accepted insurance list (editable)
-- Email sender address (Resend config)
+- Gmail sender address (displayed, not editable — set via env var)
 
 ---
 
@@ -338,9 +359,11 @@ ultrasound:
 
 ```bash
 # .env.local
-RESEND_API_KEY=
-BACKEND_ENGINE_URL=http://localhost:8000   # Risk score + CSV engine
-VOICE_ENGINE_URL=http://localhost:8001     # Voice + overbooking engine
+GMAIL_USER=your@gmail.com
+GMAIL_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx   # Google App Password — NOT your Gmail password
+                                          # Generate at myaccount.google.com → Security → App Passwords
+BACKEND_ENGINE_URL=http://localhost:8000  # Risk score + CSV engine
+VOICE_ENGINE_URL=http://localhost:8001    # Voice + overbooking engine
 NEXT_PUBLIC_CLINIC_NAME="Demo Clinic"
 NEXT_PUBLIC_AVG_VISIT_VALUE=250
 ```
@@ -400,46 +423,3 @@ These are roadmap features only. Do not implement:
 - Sentiment detection (voice engine's responsibility)
 - Auth / login system
 - Outcome correlation engine (show static mock chart only)
-
----
-
-## Skill routing
-
-When the user's request matches an available skill, invoke it via the Skill tool. The
-skill has multi-step workflows, checklists, and quality gates that produce better
-results than an ad-hoc answer. When in doubt, invoke the skill. A false positive is
-cheaper than a false negative.
-
-Key routing rules:
-- Product ideas, "is this worth building", brainstorming → invoke /office-hours
-- Strategy, scope, "think bigger", "what should we build" → invoke /plan-ceo-review
-- Architecture, "does this design make sense" → invoke /plan-eng-review
-- Design system, brand, "how should this look" → invoke /design-consultation
-- Design review of a plan → invoke /plan-design-review
-- Developer experience of a plan → invoke /plan-devex-review
-- "Review everything", full review pipeline → invoke /autoplan
-- Bugs, errors, "why is this broken", "wtf", "this doesn't work" → invoke /investigate
-- Test the site, find bugs, "does this work" → invoke /qa (or /qa-only for report only)
-- Code review, check the diff, "look at my changes" → invoke /review
-- Visual polish, design audit, "this looks off" → invoke /design-review
-- Developer experience audit, try onboarding → invoke /devex-review
-- Ship, deploy, create a PR, "send it" → invoke /ship
-- Merge + deploy + verify → invoke /land-and-deploy
-- Configure deployment → invoke /setup-deploy
-- Post-deploy monitoring → invoke /canary
-- Update docs after shipping → invoke /document-release
-- Weekly retro, "how'd we do" → invoke /retro
-- Second opinion, codex review → invoke /codex
-- Safety mode, careful mode, lock it down → invoke /careful or /guard
-- Restrict edits to a directory → invoke /freeze or /unfreeze
-- Upgrade gstack → invoke /gstack-upgrade
-- Save progress, "save my work" → invoke /context-save
-- Resume, restore, "where was I" → invoke /context-restore
-- Security audit, OWASP, "is this secure" → invoke /cso
-- Make a PDF, document, publication → invoke /make-pdf
-- Launch real browser for QA → invoke /open-gstack-browser
-- Import cookies for authenticated testing → invoke /setup-browser-cookies
-- Performance regression, page speed, benchmarks → invoke /benchmark
-- Review what gstack has learned → invoke /learn
-- Tune question sensitivity → invoke /plan-tune
-- Code quality dashboard → invoke /health

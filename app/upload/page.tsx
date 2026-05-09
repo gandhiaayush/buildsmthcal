@@ -17,7 +17,9 @@ import {
   Shield,
   Loader2,
   Download,
+  FileText,
 } from "lucide-react";
+import { PatientHealthSheet } from "@/components/PatientHealthSheet";
 
 type PatientState = {
   email: string;
@@ -54,9 +56,17 @@ export default function UploadPage() {
   );
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [healthSheet, setHealthSheet] = useState<AppointmentRow | null>(null);
 
   function patch(id: string, update: Partial<PatientState>) {
-    setStates((prev) => ({ ...prev, [id]: { ...prev[id], ...update } }));
+    setStates((prev) => {
+      const next = { ...prev, [id]: { ...prev[id], ...update } };
+      if ("email" in update) {
+        const emails = Object.fromEntries(Object.entries(next).map(([k, v]) => [k, v.email]));
+        sessionStorage.setItem("patient-emails", JSON.stringify(emails));
+      }
+      return next;
+    });
   }
 
   async function handleFile(patient: AppointmentRow, file: File) {
@@ -277,6 +287,14 @@ export default function UploadPage() {
                     {st.riskScore ? "Re-upload CSV" : "Upload CSV"}
                   </button>
 
+                  <button
+                    onClick={() => setHealthSheet(patient)}
+                    className="flex items-center justify-center gap-2 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Health Chart
+                  </button>
+
                   <input
                     type="email"
                     value={st.email}
@@ -319,6 +337,13 @@ export default function UploadPage() {
           );
         })}
       </div>
+
+      {healthSheet && (
+        <>
+          <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setHealthSheet(null)} />
+          <PatientHealthSheet appointment={healthSheet} onClose={() => setHealthSheet(null)} />
+        </>
+      )}
     </div>
   );
 }
