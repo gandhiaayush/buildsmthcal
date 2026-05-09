@@ -8,6 +8,7 @@ export type ProcedureType =
 export type AppointmentRow = {
   patient_id: string;
   patient_name: string;
+  patient_email?: string;
   appointment_time: string;
   appointment_type: ProcedureType;
   doctor_name: string;

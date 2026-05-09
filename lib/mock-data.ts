@@ -49,6 +49,7 @@ export const MOCK_APPOINTMENTS: AppointmentRow[] = [
   {
     patient_id: "P001",
     patient_name: "Maria Santos",
+    patient_email: "maria.santos@demo.com",
     appointment_time: new Date(Date.now() + 2 * 3600000).toISOString(),
     appointment_type: "ultrasound",
     doctor_name: "Dr. Reyes",
@@ -96,6 +97,7 @@ export const MOCK_APPOINTMENTS: AppointmentRow[] = [
   {
     patient_id: "P005",
     patient_name: "Priya Patel",
+    patient_email: "priya.patel@demo.com",
     appointment_time: new Date(Date.now() + 6 * 3600000).toISOString(),
     appointment_type: "ultrasound",
     doctor_name: "Dr. Chen",

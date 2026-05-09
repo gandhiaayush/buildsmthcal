@@ -11,11 +11,20 @@ import type { RiskScore, InsuranceStatus } from "@/types";
 import { Upload, ArrowRight } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 
+function isWithin3Hours(appointmentTime: string): boolean {
+  const diff = new Date(appointmentTime).getTime() - Date.now();
+  return diff >= 0 && diff <= 3 * 60 * 60 * 1000;
+}
+
 export default function DashboardPage() {
   const [scores, setScores] = useState<RiskScore[]>([]);
   const [brief, setBrief] = useState<any>(null);
   const [selectedScore, setSelectedScore] = useState<RiskScore | null>(null);
-  const [telehealthSent, setTelehealthSent] = useState<Set<string>>(new Set());
+  const [patientEmails, setPatientEmails] = useState<Record<string, string>>(() =>
+    Object.fromEntries(MOCK_APPOINTMENTS.map((p) => [p.patient_id, p.patient_email ?? ""]))
+  );
+  const [telehealthSentAt, setTelehealthSentAt] = useState<Record<string, string>>({});
+
   const clinicName = process.env.NEXT_PUBLIC_CLINIC_NAME ?? "Demo Clinic";
   const avgVisitValue = Number(process.env.NEXT_PUBLIC_AVG_VISIT_VALUE ?? 250);
 
@@ -58,20 +67,37 @@ export default function DashboardPage() {
   }));
 
   async function sendTelehealth(score: RiskScore) {
+    const email = patientEmails[score.patient_id] ?? "";
     await fetch("/api/telehealth-pivot", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        patient_id: score.patient_id,
         patient_name: score.patient_name,
         appointment_time: score.appointment_time,
-        patient_email: "patient@demo.com",
+        patient_email: email || "patient@demo.com",
       }),
     });
-    setTelehealthSent((prev) => new Set(Array.from(prev).concat(score.patient_id)));
+    const sentAt = new Date().toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    setTelehealthSentAt((prev) => ({ ...prev, [score.patient_id]: sentAt }));
   }
 
   const highRisk = scores.filter((s) => s.risk_level === "high");
   const revenueAtRisk = highRisk.length * avgVisitValue;
+
+  const canSendTelehealth = (score: RiskScore) => {
+    const appt = MOCK_APPOINTMENTS.find((a) => a.patient_id === score.patient_id);
+    return (
+      score.risk_level === "high" &&
+      !appt?.confirmed &&
+      isWithin3Hours(score.appointment_time) &&
+      !!patientEmails[score.patient_id]?.trim() &&
+      !telehealthSentAt[score.patient_id]
+    );
+  };
 
   return (
     <div className="space-y-6 max-w-6xl">
@@ -79,7 +105,12 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
           <p className="text-gray-500 text-sm mt-0.5">
-            {clinicName} · {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+            {clinicName} ·{" "}
+            {new Date().toLocaleDateString("en-US", {
+              weekday: "long",
+              month: "long",
+              day: "numeric",
+            })}
           </p>
         </div>
         <Link
@@ -98,9 +129,12 @@ export default function DashboardPage() {
           { label: "Revenue at Risk", value: formatCurrency(revenueAtRisk), color: "text-red-600" },
           {
             label: "Model Confidence",
-            value: scores.length > 0
-              ? `${Math.round((scores.reduce((s, r) => s + r.confidence, 0) / scores.length) * 100)}%`
-              : "—",
+            value:
+              scores.length > 0
+                ? `${Math.round(
+                    (scores.reduce((s, r) => s + r.confidence, 0) / scores.length) * 100
+                  )}%`
+                : "—",
             color: "text-green-600",
           },
         ].map(({ label, value, color }) => (
@@ -119,7 +153,10 @@ export default function DashboardPage() {
         <div className="lg:col-span-2 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold text-gray-900">Today's Appointments</h2>
-            <Link href="/upload" className="text-sm text-blue-600 hover:underline flex items-center gap-1">
+            <Link
+              href="/upload"
+              className="text-sm text-blue-600 hover:underline flex items-center gap-1"
+            >
               Upload new <ArrowRight className="w-3 h-3" />
             </Link>
           </div>
@@ -142,9 +179,13 @@ export default function DashboardPage() {
               insuranceStatus={insuranceStatuses.find(
                 (i) => i.patient_id === selectedScore.patient_id
               )}
-              telehealthSent={telehealthSent.has(selectedScore.patient_id)}
+              patientEmail={patientEmails[selectedScore.patient_id]}
+              onEmailChange={(email) =>
+                setPatientEmails((prev) => ({ ...prev, [selectedScore.patient_id]: email }))
+              }
+              telehealthSentAt={telehealthSentAt[selectedScore.patient_id] ?? null}
               onSendTelehealth={
-                selectedScore.risk_level === "high"
+                canSendTelehealth(selectedScore)
                   ? () => sendTelehealth(selectedScore)
                   : undefined
               }

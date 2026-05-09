@@ -11,7 +11,7 @@ export default function SettingsPage() {
   const [avgVisitValue, setAvgVisitValue] = useState(
     Number(process.env.NEXT_PUBLIC_AVG_VISIT_VALUE ?? 250)
   );
-  const [emailSender, setEmailSender] = useState("no-reply@democliniic.com");
+  const gmailUser = process.env.NEXT_PUBLIC_GMAIL_USER ?? "not configured";
   const [insurance, setInsurance] = useState<string[]>([
     "Aetna", "BlueCross BlueShield", "Cigna", "Humana", "Kaiser", "Medicare", "Medicaid", "UnitedHealthcare",
   ]);
@@ -54,16 +54,13 @@ export default function SettingsPage() {
           </div>
         </Section>
 
-        {/* Email sender */}
-        <Section title="Email Sender Address" desc="Used as the From address for Resend emails">
-          <input
-            type="email"
-            value={emailSender}
-            onChange={(e) => setEmailSender(e.target.value)}
-            className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+        {/* Gmail sender */}
+        <Section title="Gmail Sender" desc="Set GMAIL_USER and GMAIL_APP_PASSWORD in .env.local">
+          <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 border rounded-lg text-sm text-gray-600">
+            {gmailUser}
+          </div>
           <p className="text-xs text-gray-400 mt-1">
-            Must be a verified sender in your Resend account
+            Generate an App Password at myaccount.google.com → Security → App Passwords
           </p>
         </Section>
 
@@ -132,7 +129,7 @@ export default function SettingsPage() {
       <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
         <p className="font-medium">Environment Variables</p>
         <p className="mt-1 text-amber-700">
-          Runtime config (RESEND_API_KEY, BACKEND_ENGINE_URL, etc.) is set in{" "}
+          Runtime config (GMAIL_USER, GMAIL_APP_PASSWORD, BACKEND_ENGINE_URL, etc.) is set in{" "}
           <code className="bg-amber-100 px-1 rounded font-mono text-xs">.env.local</code>. Settings
           here are for demo purposes only — persistence requires a database.
         </p>

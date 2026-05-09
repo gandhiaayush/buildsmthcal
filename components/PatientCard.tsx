@@ -10,7 +10,9 @@ interface PatientCardProps {
   appointment: AppointmentRow;
   riskScore?: RiskScore;
   insuranceStatus?: InsuranceStatus;
-  telehealthSent?: boolean;
+  patientEmail?: string;
+  onEmailChange?: (email: string) => void;
+  telehealthSentAt?: string | null;
   onSendTelehealth?: () => Promise<void>;
   onTriggerVoice?: () => Promise<void>;
 }
@@ -19,7 +21,9 @@ export function PatientCard({
   appointment,
   riskScore,
   insuranceStatus,
-  telehealthSent,
+  patientEmail,
+  onEmailChange,
+  telehealthSentAt,
   onSendTelehealth,
   onTriggerVoice,
 }: PatientCardProps) {
@@ -68,13 +72,6 @@ export function PatientCard({
         </div>
       )}
 
-      {/* Telehealth sent badge */}
-      {telehealthSent && (
-        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-full">
-          <CheckCircle className="w-3 h-3" /> Telehealth offer sent
-        </span>
-      )}
-
       {/* Reasons */}
       {riskScore && riskScore.reasons.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -86,10 +83,29 @@ export function PatientCard({
         </div>
       )}
 
+      {/* Patient email input */}
+      {onEmailChange !== undefined && (
+        <input
+          type="email"
+          value={patientEmail ?? ""}
+          onChange={(e) => onEmailChange(e.target.value)}
+          placeholder="Patient email for outreach"
+          className="w-full border rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      )}
+
+      {/* Telehealth sent badge */}
+      {telehealthSentAt ? (
+        <div className="flex items-center gap-1.5 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-2.5 py-1.5">
+          <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+          Telehealth offer sent {telehealthSentAt}
+        </div>
+      ) : null}
+
       {/* Actions */}
       {(onSendTelehealth || onTriggerVoice) && (
         <div className="flex gap-2 pt-1">
-          {onSendTelehealth && !telehealthSent && (
+          {onSendTelehealth && !telehealthSentAt && (
             <button
               onClick={handleTelehealth}
               disabled={loading !== null}
@@ -109,6 +125,13 @@ export function PatientCard({
               {loading === "voice" ? "Queuing..." : "Voice Call"}
             </button>
           )}
+        </div>
+      )}
+
+      {/* No insurance warning */}
+      {!insuranceStatus && !appointment.insurance_provider && (
+        <div className="flex items-center gap-1.5 text-xs text-amber-600">
+          <AlertCircle className="w-3.5 h-3.5" /> No insurance on file
         </div>
       )}
     </div>
