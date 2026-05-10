@@ -6,7 +6,8 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const db = require('./db');
-const { createRetellCall, getRetellCall, verifyRetellSignature } = require('./retell');
+const { createRetellCall, getCallContext, deleteCallContext } = require('./retell');
+const OpenAIRealtimeAgent = require('./agent');
 const { parseAndIngest } = require('./csv-parser');
 const { backfillWaitlist } = require('./waitlist');
 const { scoreAppointment } = require('./risk-scoring');
@@ -14,6 +15,7 @@ const logger = require('./logger');
 
 const app = express();
 const server = http.createServer(app);
+require('express-ws')(app, server);
 
 // ---------------------------------------------------------------------------
 // Middleware
@@ -28,12 +30,8 @@ app.use(cors({
   credentials: true,
 }));
 
-// Raw body needed for Retell webhook signature verification
-app.use('/retell-webhook', express.raw({ type: '*/*' }));
-
-// JSON + urlencoded for everything else
+// JSON + urlencoded for all routes
 app.use((req, res, next) => {
-  if (req.path === '/retell-webhook') return next();
   express.json()(req, res, next);
 });
 app.use(express.urlencoded({ extended: false }));
@@ -58,19 +56,16 @@ function classifySentiment(transcript) {
 }
 
 // ---------------------------------------------------------------------------
-// Retell call outcome classification from disconnection_reason
+// Outcome classification from call transcript (keyword-based)
 // ---------------------------------------------------------------------------
 
-function classifyOutcome(callAnalysis, disconnectionReason) {
-  if (callAnalysis?.in_voicemail) return 'no_answer';
-  if (callAnalysis?.call_successful === false) return 'declined';
-  if (disconnectionReason === 'dial_failed' || disconnectionReason === 'dial_no_answer') return 'no_answer';
-  if (disconnectionReason === 'error_infer_no_user_input') return 'no_answer';
-  const summary = (callAnalysis?.call_summary || '').toLowerCase();
-  if (summary.includes('confirm') || summary.includes('attend') || summary.includes('will come')) return 'confirmed';
-  if (summary.includes('reschedul')) return 'rescheduled';
-  if (summary.includes('decline') || summary.includes('cancel') || summary.includes('won\'t')) return 'declined';
-  return 'confirmed'; // default: assume confirmed if call completed without failure
+function classifyOutcomeFromTranscript(transcript) {
+  if (!transcript || transcript.trim().length < 30) return 'no_answer';
+  const t = transcript.toLowerCase();
+  if (/reschedule|different time|can't make it|move.*appointment|another time/.test(t)) return 'rescheduled';
+  if (/won't come|can't come|not coming|don't want|decline|cancel/.test(t)) return 'declined';
+  if (/yes|confirm|i'll be there|will be there|sounds good|absolutely|see you|looking forward/.test(t)) return 'confirmed';
+  return transcript.length > 100 ? 'confirmed' : 'no_answer';
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +123,7 @@ app.get('/api/appointments/:id', async (req, res) => {
   }
 });
 
-// Trigger outbound Retell call
+// Trigger outbound AI call (Twilio + OpenAI Realtime)
 app.post('/api/calls/trigger', async (req, res) => {
   const { appointment_id } = req.body;
   if (!appointment_id) return res.status(400).json({ error: 'appointment_id required' });
@@ -167,8 +162,8 @@ app.post('/api/calls/trigger', async (req, res) => {
     await db.updateAppointmentOutreach(appointment_id, 'called');
     await db.updatePatientLastContacted(appt.patient_id);
 
-    logger.info({ appointment_id, retell_call_id }, 'call triggered');
-    res.json({ call_id: callRecord.id, retell_call_id, call_status });
+    logger.info({ appointment_id, call_sid: retell_call_id }, 'call triggered');
+    res.json({ call_id: callRecord.id, call_sid: retell_call_id, call_status });
   } catch (err) {
     logger.error({ appointment_id, err: err.message }, 'call trigger failed');
     res.status(500).json({ error: err.message });
@@ -222,87 +217,156 @@ app.get('/api/waitlist', async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Retell webhook — receives call events
-// Docs: call_started, call_ended, call_analyzed events
-// Signature: x-retell-signature header, HMAC-SHA256(apiKey, rawBody)
+// TwiML — Twilio fetches this when patient answers
+// Returns <Connect><Stream> pointing back to our /media-stream WebSocket
 // ---------------------------------------------------------------------------
 
-app.post('/retell-webhook', async (req, res) => {
-  const rawBody = req.body; // Buffer (raw middleware applied above)
-  const signature = req.headers['x-retell-signature'];
+app.get('/outbound-twiml', (req, res) => {
+  const taskId = req.query.taskId || '';
+  const host = req.headers.host;
+  const wsUrl = `wss://${host}/media-stream?taskId=${encodeURIComponent(taskId)}`;
+  res.type('text/xml');
+  res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${wsUrl}"/>
+  </Connect>
+</Response>`);
+});
 
-  if (signature && !verifyRetellSignature(rawBody, signature)) {
-    logger.warn('retell-webhook: invalid signature');
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
+// Twilio call status callback — acknowledge only
+app.post('/call-status', (req, res) => res.sendStatus(200));
 
-  let event;
-  try {
-    event = JSON.parse(rawBody.toString());
-  } catch {
-    return res.status(400).json({ error: 'Invalid JSON' });
-  }
+// ---------------------------------------------------------------------------
+// /media-stream — Twilio Media Streams WebSocket
+// Bridges Twilio audio (g711_ulaw 8kHz) ↔ OpenAI Realtime (g711_ulaw 8kHz)
+// No transcoding needed — OpenAI Realtime accepts g711_ulaw natively
+// ---------------------------------------------------------------------------
 
-  const { event: eventType, call } = event;
-  logger.info({ eventType, call_id: call?.call_id }, 'retell-webhook received');
+const mediaSessions = new Map(); // streamSid → session object
 
-  res.sendStatus(200); // Acknowledge immediately
+app.ws('/media-stream', (ws, req) => {
+  const taskId = req.query.taskId || '';
+  logger.info({ taskId }, 'media-stream: connection opened');
 
-  // Process async — don't block Retell
-  setImmediate(async () => {
-    try {
-      if (eventType === 'call_analyzed' && call?.call_id) {
-        const callRecord = await db.getCallByRetellCallId(call.call_id);
-        if (!callRecord) {
-          logger.warn({ retell_call_id: call.call_id }, 'retell-webhook: no matching call record');
-          return;
-        }
+  ws.on('message', async (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
 
-        const analysis = call.call_analysis || {};
-        const transcript = call.transcript || '';
-        const startTs = call.start_timestamp;
-        const endTs = call.end_timestamp;
-        const durationSeconds = (startTs && endTs) ? Math.round((endTs - startTs) / 1000) : null;
+    switch (msg.event) {
+      case 'start': {
+        const { streamSid, callSid } = msg.start;
 
-        const outcome = classifyOutcome(analysis, call.disconnection_reason);
+        const ctx = getCallContext(taskId);
+        const appt = await db.getAppointment(taskId).catch(() => null);
+        const patient = appt?.patients || null;
 
-        // Map Retell sentiment to our schema
-        const retellSentiment = (analysis.user_sentiment || '').toLowerCase();
-        const sentiment = retellSentiment === 'negative' ? 'hostile'
-          : retellSentiment === 'positive' ? 'positive'
-          : classifySentiment(transcript);
+        const callRecord = await db.createCall({
+          appointment_id: taskId || null,
+          patient_id: appt?.patient_id || null,
+          retell_call_id: callSid,
+        }).catch(err => { logger.error({ err: err.message }, 'createCall failed'); return null; });
 
-        await db.updateCall(callRecord.id, {
-          outcome,
-          transcript,
-          sentiment,
-          duration_seconds: durationSeconds,
+        const agent = new OpenAIRealtimeAgent({
+          taskId,
+          dynamicVariables: ctx?.dynamicVariables || {},
+          onAudioOut: (base64Audio) => {
+            if (ws.readyState === ws.OPEN) {
+              ws.send(JSON.stringify({
+                event: 'media',
+                streamSid,
+                media: { payload: base64Audio },
+              }));
+            }
+          },
+          onTranscript: ({ role, text }) => {
+            logger.debug({ taskId, role, text: text.slice(0, 80) }, 'transcript fragment');
+          },
+        });
+        agent.connect();
+
+        mediaSessions.set(streamSid, {
+          agent,
+          callRecordId: callRecord?.id || null,
+          taskId,
+          startTime: Date.now(),
+          appt,
+          patient,
         });
 
-        // Update appointment based on outcome
-        if (callRecord.appointment_id) {
+        logger.info({ streamSid, taskId, callSid }, 'media-stream: session started');
+        break;
+      }
+
+      case 'media': {
+        const session = mediaSessions.get(msg.streamSid);
+        session?.agent?.sendAudio(msg.media.payload);
+        break;
+      }
+
+      case 'stop': {
+        const { streamSid } = msg;
+        const session = mediaSessions.get(streamSid);
+        if (!session) break;
+
+        const { agent, callRecordId, taskId: sid, startTime, appt, patient } = session;
+        const transcript = agent.getTranscript();
+        const durationSeconds = Math.round((Date.now() - startTime) / 1000);
+        const outcome = classifyOutcomeFromTranscript(transcript);
+        const sentiment = classifySentiment(transcript);
+
+        if (callRecordId) {
+          await db.updateCall(callRecordId, {
+            outcome, transcript, sentiment, duration_seconds: durationSeconds,
+          }).catch(err => logger.error({ err: err.message }, 'updateCall failed'));
+        }
+
+        if (appt) {
           if (outcome === 'confirmed') {
-            await db.updateAppointmentOutreach(callRecord.appointment_id, 'confirmed');
-            await db.updateAppointmentStatus(callRecord.appointment_id, 'confirmed');
+            await db.updateAppointmentOutreach(appt.id, 'confirmed').catch(() => {});
+            await db.updateAppointmentStatus(appt.id, 'confirmed').catch(() => {});
           } else if (outcome === 'rescheduled') {
-            await db.updateAppointmentOutreach(callRecord.appointment_id, 'rescheduled');
-          } else if (outcome === 'no_answer' || outcome === 'declined') {
-            await db.updateAppointmentOutreach(callRecord.appointment_id, 'failed');
-            // Trigger waitlist backfill — this slot may open up
-            const appt = await db.getAppointment(callRecord.appointment_id);
-            if (appt) {
-              await backfillWaitlist(appt.scheduled_at, appt.provider_name).catch(err =>
-                logger.warn({ err: err.message }, 'waitlist backfill after failed call failed')
-              );
-            }
+            await db.updateAppointmentOutreach(appt.id, 'rescheduled').catch(() => {});
+          } else {
+            await db.updateAppointmentOutreach(appt.id, 'failed').catch(() => {});
+            await backfillWaitlist(appt.scheduled_at, appt.provider_name).catch(() => {});
           }
         }
 
-        logger.info({ call_id: call.call_id, outcome, sentiment }, 'retell-webhook: call_analyzed processed');
+        const n8nUrl = process.env.N8N_WEBHOOK_URL;
+        if (n8nUrl) {
+          fetch(n8nUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              event: 'call_analyzed',
+              timestamp: new Date().toISOString(),
+              call_id: callRecordId,
+              outcome,
+              sentiment,
+              duration_seconds: durationSeconds,
+              transcript,
+              patient_name:     patient?.name || null,
+              patient_phone:    patient?.phone || null,
+              appointment_time: appt?.scheduled_at || null,
+              appointment_type: appt?.appointment_type || null,
+              provider_name:    appt?.provider_name || null,
+              practice_email:   process.env.PRACTICE_EMAIL || null,
+            }),
+          }).catch(err => logger.warn({ err: err.message }, 'N8N webhook failed'));
+        }
+
+        agent.disconnect();
+        mediaSessions.delete(streamSid);
+        deleteCallContext(sid);
+        logger.info({ streamSid, outcome, durationSeconds }, 'media-stream: session ended');
+        break;
       }
-    } catch (err) {
-      logger.error({ err: err.message, call_id: call?.call_id }, 'retell-webhook: processing error');
     }
+  });
+
+  ws.on('close', () => {
+    logger.info({ taskId }, 'media-stream: ws closed');
   });
 });
 

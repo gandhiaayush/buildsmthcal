@@ -3,11 +3,11 @@ require('dotenv').config();
 const REQUIRED_ENV = [
   'INSFORGE_URL',
   'INSFORGE_KEY',
-  'RETELL_API_KEY',
-  'RETELL_AGENT_ID',
-  'RETELL_PHONE_NUMBER',
+  'OPENAI_API_KEY',
   'TWILIO_ACCOUNT_SID',
   'TWILIO_AUTH_TOKEN',
+  'TWILIO_PHONE_NUMBER',
+  'TWILIO_WEBHOOK_BASE',
 ];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
