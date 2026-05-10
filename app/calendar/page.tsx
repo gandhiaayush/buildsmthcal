@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import type { AppointmentRow, RiskScore } from "@/types";
-import { MOCK_APPOINTMENTS, mockRiskScores } from "@/lib/mock-data";
+import { MOCK_APPOINTMENTS, mockRiskScore, mockRiskScores } from "@/lib/mock-data";
 import { PatientHealthSheet } from "@/components/PatientHealthSheet";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { CreateAppointmentModal } from "@/components/CreateAppointmentModal";
+import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 
 const HOUR_START = 8;
 const HOUR_END = 20;
@@ -88,6 +89,7 @@ export default function CalendarPage() {
   const [appointments, setAppointments] = useState<AppointmentRow[]>(MOCK_APPOINTMENTS);
   const [scores, setScores] = useState<RiskScore[]>([]);
   const [sheet, setSheet] = useState<AppointmentRow | null>(null);
+  const [createModal, setCreateModal] = useState<{ open: boolean; date?: Date }>({ open: false });
 
   useEffect(() => {
     const savedAppts = sessionStorage.getItem("appointments");
@@ -101,6 +103,16 @@ export default function CalendarPage() {
   const today = new Date();
 
   const hours = Array.from({ length: HOUR_END - HOUR_START }, (_, i) => HOUR_START + i);
+
+  function handleSaveAppointment(appt: AppointmentRow) {
+    const updated = [...appointments, appt];
+    setAppointments(updated);
+    sessionStorage.setItem("appointments", JSON.stringify(updated));
+    const newScore = mockRiskScore(appt);
+    const updatedScores = [...scores, newScore];
+    setScores(updatedScores);
+    sessionStorage.setItem("risk-scores", JSON.stringify(updatedScores));
+  }
 
   function shiftWeek(delta: number) {
     const d = new Date(weekAnchor);
@@ -118,6 +130,12 @@ export default function CalendarPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setCreateModal({ open: true })}
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+          >
+            <Plus className="w-4 h-4" /> New Appointment
+          </button>
           <button
             onClick={() => setWeekAnchor(new Date())}
             className="text-sm px-3 py-1.5 border rounded-lg hover:bg-gray-50 transition-colors"
@@ -181,19 +199,22 @@ export default function CalendarPage() {
 
             return (
               <div key={day.toISOString()} className="flex-1 border-r last:border-r-0 min-w-[90px]">
-                {/* Day header */}
-                <div className={`h-12 border-b flex flex-col items-center justify-center ${isToday ? "bg-blue-50" : ""}`}>
+                {/* Day header — click to create appointment on this day */}
+                <button
+                  onClick={() => setCreateModal({ open: true, date: day })}
+                  className={`h-12 border-b flex flex-col items-center justify-center w-full group ${isToday ? "bg-blue-50" : "hover:bg-gray-50"} transition-colors`}
+                >
                   <span className={`text-xs font-medium ${isToday ? "text-blue-600" : "text-gray-500"}`}>
                     {day.toLocaleDateString("en-US", { weekday: "short" })}
                   </span>
                   <span
-                    className={`text-sm font-bold w-7 h-7 rounded-full flex items-center justify-center ${
-                      isToday ? "bg-blue-600 text-white" : "text-gray-900"
+                    className={`text-sm font-bold w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
+                      isToday ? "bg-blue-600 text-white" : "text-gray-900 group-hover:bg-gray-200"
                     }`}
                   >
                     {day.getDate()}
                   </span>
-                </div>
+                </button>
 
                 {/* Time grid */}
                 <div className="relative" style={{ height: TOTAL_HEIGHT }}>
@@ -249,6 +270,15 @@ export default function CalendarPage() {
           />
           <PatientHealthSheet appointment={sheet} onClose={() => setSheet(null)} />
         </>
+      )}
+
+      {/* Create appointment modal */}
+      {createModal.open && (
+        <CreateAppointmentModal
+          initialDate={createModal.date}
+          onClose={() => setCreateModal({ open: false })}
+          onSave={handleSaveAppointment}
+        />
       )}
     </div>
   );

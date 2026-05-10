@@ -21,6 +21,13 @@ export type PriorVisit = {
   notes: string;
 };
 
+export type Caregiver = {
+  name: string;
+  relation: string;
+  phone: string;
+  email: string;
+};
+
 export type PatientHealth = {
   patient_id: string;
   dob: string;
@@ -28,6 +35,7 @@ export type PatientHealth = {
   gender: string;
   blood_type: string;
   phone: string;
+  email: string;
   allergies: string[];
   conditions: Condition[];
   medications: Medication[];
@@ -39,6 +47,8 @@ export type PatientHealth = {
   deductible_met: number;
   out_of_pocket_max: number;
   out_of_pocket_met: number;
+  caregiver?: Caregiver;
+  needs_caregiver_loop?: boolean;
 };
 
 export const PATIENT_HEALTH: Record<string, PatientHealth> = {
@@ -49,6 +59,7 @@ export const PATIENT_HEALTH: Record<string, PatientHealth> = {
     gender: "Female",
     blood_type: "B+",
     phone: "(555) 234-5678",
+    email: "maria.gonzalez@email.com",
     allergies: ["Penicillin", "Latex"],
     conditions: [
       { name: "Type 2 Diabetes", icd10: "E11", diagnosed: "2019-03-15", status: "active", severity: "moderate" },
@@ -79,6 +90,7 @@ export const PATIENT_HEALTH: Record<string, PatientHealth> = {
     gender: "Male",
     blood_type: "O+",
     phone: "(555) 345-6789",
+    email: "robert.chen.jr@email.com",
     allergies: ["Sulfa drugs"],
     conditions: [
       { name: "Coronary Artery Disease", icd10: "I25.1", diagnosed: "2021-01-10", status: "active", severity: "severe" },
@@ -102,6 +114,13 @@ export const PATIENT_HEALTH: Record<string, PatientHealth> = {
     deductible_met: 1632,
     out_of_pocket_max: 7400,
     out_of_pocket_met: 3200,
+    needs_caregiver_loop: true,
+    caregiver: {
+      name: "David Chen",
+      relation: "Son",
+      phone: "(555) 345-0099",
+      email: "david.chen@email.com",
+    },
   },
   P003: {
     patient_id: "P003",
@@ -110,6 +129,7 @@ export const PATIENT_HEALTH: Record<string, PatientHealth> = {
     gender: "Female",
     blood_type: "A-",
     phone: "(555) 456-7890",
+    email: "aisha.patel@email.com",
     allergies: ["Aspirin", "Codeine"],
     conditions: [
       { name: "Glioblastoma Grade III", icd10: "C71.9", diagnosed: "2024-09-01", status: "active", severity: "severe" },
@@ -133,6 +153,13 @@ export const PATIENT_HEALTH: Record<string, PatientHealth> = {
     deductible_met: 2400,
     out_of_pocket_max: 8000,
     out_of_pocket_met: 5100,
+    needs_caregiver_loop: true,
+    caregiver: {
+      name: "Priya Patel",
+      relation: "Mother",
+      phone: "(555) 456-1122",
+      email: "priya.patel.mom@email.com",
+    },
   },
   P004: {
     patient_id: "P004",
@@ -141,6 +168,7 @@ export const PATIENT_HEALTH: Record<string, PatientHealth> = {
     gender: "Male",
     blood_type: "AB+",
     phone: "(555) 567-8901",
+    email: "james.wilson@email.com",
     allergies: [],
     conditions: [
       { name: "Acute Appendicitis", icd10: "K37", diagnosed: "2025-05-08", status: "active", severity: "severe" },
@@ -167,6 +195,7 @@ export const PATIENT_HEALTH: Record<string, PatientHealth> = {
     gender: "Female",
     blood_type: "O-",
     phone: "(555) 678-9012",
+    email: "linda.martinez@email.com",
     allergies: ["Ibuprofen", "Shellfish (dietary)"],
     conditions: [
       { name: "Ovarian Cyst", icd10: "N83.2", diagnosed: "2025-02-10", status: "monitoring", severity: "moderate" },

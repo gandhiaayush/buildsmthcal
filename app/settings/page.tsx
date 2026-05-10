@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-
-import { CheckCircle, Plus, X } from "lucide-react";
+import { CheckCircle, Plus, X, Loader2, Wifi, WifiOff } from "lucide-react";
 
 export default function SettingsPage() {
   const [clinicName, setClinicName] = useState(
@@ -17,10 +16,32 @@ export default function SettingsPage() {
   ]);
   const [newIns, setNewIns] = useState("");
   const [saved, setSaved] = useState(false);
+  const [testState, setTestState] = useState<{
+    status: "idle" | "testing" | "ok" | "fail";
+    message?: string;
+    raw?: string;
+    user?: string;
+  }>({ status: "idle" });
 
   function save() {
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
+  }
+
+  async function testEmail() {
+    setTestState({ status: "testing" });
+    try {
+      const res = await fetch("/api/test-email");
+      const data = await res.json();
+      setTestState({
+        status: data.ok ? "ok" : "fail",
+        message: data.message ?? data.error,
+        raw: data.raw,
+        user: data.user,
+      });
+    } catch {
+      setTestState({ status: "fail", message: "Could not reach the test endpoint." });
+    }
   }
 
   return (
@@ -54,14 +75,49 @@ export default function SettingsPage() {
           </div>
         </Section>
 
-        {/* Gmail sender */}
+        {/* Gmail sender + test */}
         <Section title="Gmail Sender" desc="Set GMAIL_USER and GMAIL_APP_PASSWORD in .env.local">
-          <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 border rounded-lg text-sm text-gray-600">
+          <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 border rounded-lg text-sm text-gray-600 mb-2">
             {gmailUser}
           </div>
-          <p className="text-xs text-gray-400 mt-1">
-            Generate an App Password at myaccount.google.com → Security → App Passwords
+          <p className="text-xs text-gray-400 mb-3">
+            App Password: myaccount.google.com → Security → 2-Step Verification → App passwords.
+            Enter the 16-character code <strong>without spaces</strong>.
           </p>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={testEmail}
+              disabled={testState.status === "testing"}
+              className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm hover:bg-gray-50 disabled:opacity-50 transition-colors"
+            >
+              {testState.status === "testing" ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : testState.status === "ok" ? (
+                <Wifi className="w-4 h-4 text-green-500" />
+              ) : testState.status === "fail" ? (
+                <WifiOff className="w-4 h-4 text-red-500" />
+              ) : (
+                <Wifi className="w-4 h-4 text-gray-400" />
+              )}
+              Test Gmail Connection
+            </button>
+
+            {testState.status === "ok" && (
+              <span className="text-sm text-green-600 flex items-center gap-1.5">
+                <CheckCircle className="w-4 h-4" /> Connected — {testState.user}
+              </span>
+            )}
+          </div>
+
+          {testState.status === "fail" && testState.message && (
+            <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700 space-y-1">
+              <p className="font-medium">{testState.message}</p>
+              {testState.raw && testState.raw !== testState.message && (
+                <p className="text-xs text-red-500 font-mono break-all">{testState.raw}</p>
+              )}
+            </div>
+          )}
         </Section>
 
         {/* Insurance list */}

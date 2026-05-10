@@ -13,6 +13,10 @@ import {
   Settings,
   Activity,
   CalendarDays,
+  DollarSign,
+  Smartphone,
+  Map,
+  Brain,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -20,12 +24,19 @@ const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/upload", label: "Patient Upload", icon: Upload },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
+  { href: "/charges", label: "Charges", icon: DollarSign },
+  { href: "/hospital-map", label: "Hospital Map", icon: Map },
+  { href: "/model-insights", label: "AI Insights", icon: Brain },
   { href: "/insurance", label: "Insurance", icon: Shield },
   { href: "/referrals", label: "Referrals", icon: GitBranch },
   { href: "/prep", label: "Prep Push", icon: Stethoscope },
   { href: "/briefing", label: "Briefing", icon: Sun },
   { href: "/revenue", label: "Revenue", icon: TrendingUp },
   { href: "/settings", label: "Settings", icon: Settings },
+];
+
+const PATIENT_NAV = [
+  { href: "/patient", label: "Patient Portal", icon: Smartphone },
 ];
 
 export function Sidebar() {
@@ -43,7 +54,7 @@ export function Sidebar() {
           </div>
         </div>
       </div>
-      <nav className="flex-1 py-4 space-y-0.5 px-2">
+      <nav className="flex-1 py-4 space-y-0.5 px-2 overflow-y-auto">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
@@ -59,6 +70,24 @@ export function Sidebar() {
             {label}
           </Link>
         ))}
+        <div className="pt-3 mt-3 border-t border-slate-700">
+          <p className="px-3 text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Patient App</p>
+          {PATIENT_NAV.map(({ href, label, icon: Icon }) => (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
+                pathname?.startsWith(href)
+                  ? "bg-indigo-600 text-white"
+                  : "text-slate-300 hover:bg-slate-800 hover:text-white"
+              )}
+            >
+              <Icon className="w-4 h-4 shrink-0" />
+              {label}
+            </Link>
+          ))}
+        </div>
       </nav>
       <div className="p-4 border-t border-slate-700">
         <p className="text-xs text-slate-500">v0.1.0 · Hackathon Build</p>
